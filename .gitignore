@@ -4,6 +4,7 @@ backend/package-lock.json
 frontend/package-lock.json
 
 # Environment variables
+backend/.env
 .env
 .env.local
 .env.production
