@@ -1,5 +1,5 @@
 {
-  "name": "backend (antar setu)",
+  "name": "backend (sangam)",
   "version": "1.0.0",
   "description": "",
   "main": "app.js",
@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "nodemon src/app.js",
     "start": "node src/app.js",
+    "test": "node --test src/__tests__/*.test.js",
     "prod": "pm2 src/app.js"
   },
   "author": "aniket",
@@ -14,10 +15,12 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "http-status": "^2.1.0",
     "mongodb": "^7.5.0",
     "mongoose": "^9.7.4",
+    "nodemailer": "^9.0.5",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
