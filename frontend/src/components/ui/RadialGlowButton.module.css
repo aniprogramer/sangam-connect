@@ -1,0 +1,82 @@
+.glowButtonWrapper {
+  position: relative;
+  display: inline-flex;
+  border-radius: var(--radius-md, 14px);
+  padding: 1px;
+  background: transparent;
+  transition: transform var(--transition-fast, 150ms ease), box-shadow var(--transition-fast, 150ms ease);
+}
+
+.glowButtonWrapper:hover {
+  transform: translateY(-1px);
+}
+
+.glowButtonWrapper:active {
+  transform: translateY(1px);
+}
+
+.glowLayer {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), var(--accent, #FF7A59) 0%, rgba(217, 80, 47, 0.4) 35%, transparent 70%);
+  opacity: 0.65;
+  filter: blur(8px);
+  pointer-events: none;
+  transition: opacity var(--transition-normal, 250ms ease);
+  z-index: 0;
+}
+
+.glowButtonWrapper:hover .glowLayer {
+  opacity: 1;
+  filter: blur(14px);
+}
+
+.buttonBase {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 24px;
+  font-family: var(--font-body, inherit);
+  font-size: 14px;
+  font-weight: 600;
+  color: #FFFFFF;
+  background: linear-gradient(180deg, #FF7A59 0%, #D9502F 100%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  box-shadow: 0 4px 16px rgba(217, 80, 47, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: all var(--transition-fast, 150ms ease);
+  white-space: nowrap;
+}
+
+.buttonBase:hover {
+  background: linear-gradient(180deg, #FF8E71 0%, #E5521C 100%);
+  box-shadow: 0 6px 24px rgba(217, 80, 47, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.secondaryVariant .buttonBase {
+  background: var(--bg-surface);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-strong, #4D4537);
+  color: var(--text-primary, #F3EEE6);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.secondaryVariant .buttonBase:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent, #FF7A59);
+  color: var(--text-primary);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4), 0 0 12px var(--accent-soft);
+}
+
+.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: not-allowed;
+}

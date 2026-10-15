@@ -1,0 +1,111 @@
+.container {
+  position: relative;
+  display: inline-block;
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.badgeBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-surface, #221E19);
+  border: 1px solid var(--border, #3A3329);
+  color: var(--text-primary, #F3EEE6);
+  padding: 5px 10px;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast, 150ms ease);
+}
+
+.badgeBtn:hover {
+  border-color: var(--border-strong, #4D4537);
+  background: var(--bg-elevated, #2C271F);
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusGood {
+  background: var(--online, #2E9E4F);
+  box-shadow: 0 0 8px rgba(46, 158, 79, 0.4);
+}
+
+.statusDegraded {
+  background: var(--idle, #D99A10);
+  box-shadow: 0 0 8px rgba(217, 154, 16, 0.4);
+}
+
+.statusPoor {
+  background: var(--danger, #D93A3A);
+  box-shadow: 0 0 8px rgba(217, 58, 58, 0.4);
+}
+
+.statusReconnecting {
+  background: var(--info, #2F6FA8);
+  box-shadow: 0 0 8px rgba(47, 111, 168, 0.4);
+  animation: pulseDot 1.2s infinite ease-in-out;
+}
+
+.statusOffline {
+  background: var(--text-muted, #8E8677);
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.telemetryPopover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 250px;
+  background: var(--bg-surface, #221E19);
+  border: 1px solid var(--border-strong, #4D4537);
+  border-radius: var(--radius-md, 12px);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.4));
+  z-index: 100;
+  color: var(--text-primary, #F3EEE6);
+  font-size: 12px;
+  animation: fadeIn 150ms ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.popoverHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border, #3A3329);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.metricRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.metricLabel {
+  color: var(--text-muted, #8E8677);
+}
+
+.metricValue {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--text-primary, #F3EEE6);
+}

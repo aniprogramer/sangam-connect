@@ -1,0 +1,35 @@
+@keyframes borderBeamTravel {
+  0% {
+    offset-distance: 0%;
+  }
+  100% {
+    offset-distance: 100%;
+  }
+}
+
+.borderBeamWrapper {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.beamLine {
+  position: absolute;
+  aspect-ratio: 1;
+  width: var(--size, 200px);
+  offset-path: rect(0 auto auto 0 round var(--radius, 14px));
+  background: linear-gradient(to left, var(--color-from, #FF7A59), var(--color-to, #F5C451), transparent);
+  opacity: 0.9;
+  filter: blur(2px);
+  animation: borderBeamTravel var(--duration, 8s) linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beamLine {
+    animation: none;
+    opacity: 0.3;
+  }
+}

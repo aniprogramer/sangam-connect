@@ -1,0 +1,70 @@
+@keyframes rotateGlow {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.cardContainer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md, 16px);
+  padding: 1px;
+  background: transparent;
+  overflow: hidden;
+  transition: transform var(--transition-fast, 150ms ease), box-shadow var(--transition-fast, 150ms ease);
+}
+
+.cardContainer:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+
+.glowBorder {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 240deg,
+    var(--accent-soft, rgba(255, 122, 89, 0.15)) 280deg,
+    var(--accent, #FF7A59) 320deg,
+    var(--idle, #F5C451) 345deg,
+    transparent 360deg
+  );
+  animation: rotateGlow 8s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.65;
+  transition: opacity var(--transition-normal, 250ms ease);
+}
+
+.cardContainer:hover .glowBorder {
+  opacity: 1;
+  animation-duration: 4s;
+}
+
+.innerContent {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-surface, #221E19);
+  border-radius: inherit;
+  border: 1px solid var(--border, #3A3329);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glowBorder {
+    animation: none;
+    opacity: 0.4;
+  }
+}

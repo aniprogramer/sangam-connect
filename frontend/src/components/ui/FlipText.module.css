@@ -1,0 +1,43 @@
+@keyframes flipChar {
+  0% {
+    transform: rotateX(0deg);
+  }
+  20% {
+    transform: rotateX(-90deg);
+    opacity: 0.3;
+  }
+  40% {
+    transform: rotateX(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: rotateX(0deg);
+  }
+}
+
+.flipTextContainer {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3em;
+  perspective: 1000px;
+}
+
+.word {
+  display: inline-flex;
+  white-space: nowrap;
+}
+
+.char {
+  display: inline-block;
+  transform-style: preserve-3d;
+  animation: flipChar var(--duration, 4s) ease-in-out infinite;
+  animation-delay: var(--char-delay, 0s);
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .char {
+    animation: none;
+  }
+}
