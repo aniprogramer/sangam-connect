@@ -1,19 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <link rel="icon" href="%PUBLIC_URL%/assets/branding/sangam-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0F1117" />
-    <meta name="description" content="Antar Setu - Secure browser-based video conferencing. Bridge distances with high-quality, encrypted meetings." />
-    <meta name="keywords" content="video conferencing, secure meetings, browser meetings, antar setu" />
-    <meta property="og:title" content="Antar Setu - Connect Beyond Distances" />
-    <meta property="og:description" content="Bridging people through secure, high-quality video meetings." />
+    <meta name="theme-color" content="#14120F" />
+    <meta name="description" content="Sangam Connect — Where Voices Converge. Modern, secure video conferencing and community communication platform." />
+    <meta name="keywords" content="video conferencing, community voice, secure meetings, sangam connect, where voices converge" />
+    <meta property="og:title" content="Sangam Connect — Where Voices Converge" />
+    <meta property="og:description" content="Where Voices Converge: Reliable, high-quality video meetings and community communication." />
     <meta property="og:type" content="website" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("sangam_theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (_) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <title>Antar Setu — Connect Beyond Distances</title>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Sangam Connect — Where Voices Converge</title>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

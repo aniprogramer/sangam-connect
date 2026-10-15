@@ -1,0 +1,167 @@
+.navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  padding: 16px 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border, #3A3329);
+  transition: all var(--transition-normal, 250ms ease);
+}
+
+.scrolled {
+  background: var(--bg-overlay);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  padding: 12px 36px;
+}
+
+.brandLink {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.brandLogo {
+  height: 38px;
+  width: auto;
+  object-fit: contain;
+  transition: transform var(--transition-fast, 150ms ease);
+}
+
+.brandLink:hover .brandLogo {
+  transform: scale(1.03);
+}
+
+.brandTextGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.brandTitle {
+  font-family: var(--font-display, inherit);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary, #F3EEE6);
+  line-height: 1.1;
+}
+
+.brandTagline {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent, #FF7A59);
+  margin-top: 2px;
+}
+
+.navLinksGroup {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border, #3A3329);
+  padding: 4px;
+  border-radius: var(--radius-full, 9999px);
+  overflow: hidden;
+}
+
+.spotlightHighlight {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 90px;
+  border-radius: var(--radius-full, 9999px);
+  background: radial-gradient(circle at center, rgba(255, 122, 89, 0.22) 0%, transparent 80%);
+  pointer-events: none;
+  transform: translateX(var(--spotlight-x, -200px));
+  transition: transform 120ms ease-out, opacity var(--transition-fast, 150ms ease);
+  opacity: var(--spotlight-opacity, 0);
+}
+
+.navLink {
+  position: relative;
+  z-index: 1;
+  padding: 8px 16px;
+  border-radius: var(--radius-full, 9999px);
+  color: var(--text-secondary, #A9A092);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color var(--transition-fast, 150ms ease);
+}
+
+.navLink:hover {
+  color: var(--text-primary, #F3EEE6);
+}
+
+.navLinkActive {
+  color: var(--text-primary, #F3EEE6);
+  background: var(--bg-subtle);
+}
+
+.actionArea {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mobileMenuBtn {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border, #3A3329);
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-primary, #F3EEE6);
+  padding: 8px;
+  cursor: pointer;
+}
+
+.mobileDrawer {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .navbar {
+    padding: 14px 20px;
+  }
+
+  .navLinksGroup {
+    display: none;
+  }
+
+  .mobileMenuBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobileDrawer {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-overlay);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border-strong, #4D4537);
+    padding: 20px;
+    gap: 12px;
+  }
+
+  .mobileDrawer .navLink {
+    padding: 12px 16px;
+    border-radius: var(--radius-sm, 8px);
+    font-size: 15px;
+  }
+}
