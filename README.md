@@ -33,7 +33,6 @@
   - [Backend Setup](#backend-setup)
   - [Frontend Setup](#frontend-setup)
 - [API Reference](#api-reference)
-- [Design System & Theming](#design-system--theming)
 - [Testing & Quality Assurance](#testing--quality-assurance)
 - [Contributing & License](#contributing--license)
 
@@ -219,7 +218,7 @@ NODE_ENV=development
 Create a `.env` file in the `frontend/` directory:
 
 ```env
-PORT=3001
+PORT=3045
 REACT_APP_API_URL=http://localhost:8050
 ```
 
@@ -258,7 +257,7 @@ npm install
 npm start
 ```
 
-The React frontend will start at `http://localhost:3001` (or whichever port is defined in `frontend/.env`).
+The React frontend will start at `http://localhost:3045` (or whichever port is defined in `frontend/.env`).
 
 ---
 
@@ -274,25 +273,6 @@ Base Endpoint: `http://localhost:8050/api/v1/users`
 | `POST` | `/resend-verification` | Request fresh verification OTP code | `{ email }` |
 | `POST` | `/add_to_activity` | Record a completed or joined meeting | `{ token, meeting_code }` |
 | `GET` | `/get_all_activity` | Retrieve user meeting history | `Query: token` |
-
----
-
-## Design System & Theming
-
-Sangam Connect features a tokenized CSS architecture in [`palette.css`](frontend/src/styles/palette.css). Themes can be toggled via the accessible header button (`ThemeToggle.jsx`) or programmatically using `useTheme()`.
-
-| Token Category | Warm Charcoal & Ember (Dark, Default) | Warm Paper & Ember (Light) |
-| :--- | :--- | :--- |
-| `--bg-app` | `#14120F` | `#FCF8F4` |
-| `--bg-surface` | `#221E19` | `#FFFFFF` |
-| `--bg-card` | `rgba(28, 24, 20, 0.85)` | `#FFFFFF` |
-| `--border` | `#3A3329` | `#E8E2D8` |
-| `--text-primary` | `#F3EEE6` | `#14120E` |
-| `--text-secondary` | `#A9A092` | `#635C50` |
-| `--accent` | `#FF7A59` | `#E84D25` |
-| `--shadow-lg` | `0 16px 48px rgba(0, 0, 0, 0.7)` | `0 20px 48px -8px rgba(50, 30, 20, 0.08)` |
-
-Theme selection automatically persists to `localStorage` under `sangam_theme` and synchronizes across tabs via native browser storage events.
 
 ---
 
