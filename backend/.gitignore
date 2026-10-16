@@ -1,0 +1,9 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+node_modules/
+package-lock.json

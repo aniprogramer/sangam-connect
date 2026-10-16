@@ -208,3 +208,79 @@ test("SocketManager - supports same user in multiple tabs concurrently (Issue 4)
     io.to = originalTo;
   }
 });
+
+test("SocketManager - Room Expiration & Inactivity Grace Period Policy (Phase Six)", async () => {
+  const httpServer = createServer();
+  const io = connectToSocket(httpServer);
+
+  let join1, leave1;
+  let socket1Emitted = [];
+  const s1 = {
+    id: "socket-exp-1",
+    emit(event, payload) {
+      socket1Emitted.push({ event, payload });
+    },
+    on(event, handler) {
+      if (event === "join-call") join1 = handler;
+      if (event === "leave-call") leave1 = handler;
+    },
+  };
+
+  let join2;
+  let socket2Emitted = [];
+  const s2 = {
+    id: "socket-exp-2",
+    emit(event, payload) {
+      socket2Emitted.push({ event, payload });
+    },
+    on(event, handler) {
+      if (event === "join-call") join2 = handler;
+    },
+  };
+
+  const listeners = io.listeners("connection");
+  listeners[0](s1);
+  listeners[0](s2);
+
+  const room = "room-grace-period-test";
+
+  // Step 1: User 1 joins room
+  join1(room, { username: "User 1" });
+
+  // Step 2: User 1 leaves room (room now empty)
+  leave1();
+
+  // Step 3: Rejoin before expiration (within grace period) -> should succeed
+  join2(room, { username: "User 2" });
+  assert.equal(
+    socket2Emitted.filter((e) => e.event === "room-error").length,
+    0,
+    "Rejoin during grace period must succeed without room-error"
+  );
+
+  // Step 4: Import and test expiration rejection
+  const { expireRoomImmediately } = await import("../controllers/socketManager.js");
+  // User 2 leaves
+  const s2Leave = { id: "socket-exp-2" };
+  // Manually expire room to simulate 15-min timeout
+  expireRoomImmediately(room);
+
+  // Step 5: New user attempts to join expired room
+  let join3;
+  let socket3Emitted = [];
+  const s3 = {
+    id: "socket-exp-3",
+    emit(event, payload) {
+      socket3Emitted.push({ event, payload });
+    },
+    on(event, handler) {
+      if (event === "join-call") join3 = handler;
+    },
+  };
+  listeners[0](s3);
+  join3(room, { username: "User 3" });
+
+  const roomError = socket3Emitted.find((e) => e.event === "room-error");
+  assert.ok(roomError, "Expired room must emit room-error to joining client");
+  assert.equal(roomError.payload.code, "ROOM_EXPIRED");
+});

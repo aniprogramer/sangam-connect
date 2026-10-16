@@ -12,7 +12,6 @@ const userSchema = new Schema(
     verificationExpiresAt: { type: Date, default: null },
     verificationAttempts: { type: Number, default: 0 },
     lastResendAt: { type: Date, default: null },
-    token: { type: String, default: null },
   },
   { timestamps: true }
 );

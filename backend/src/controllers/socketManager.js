@@ -1,4 +1,5 @@
 import { Server } from "socket.io";
+import { allowedOrigins } from "../config/cors.js";
 
 /** @type {Record<string, string[]>} room path → [socketId, ...] */
 let connections = {};
@@ -8,6 +9,12 @@ let messages = {};
 let timeOnline = {};
 /** @type {Record<string, { socketId: string, room: string, username: string, userId?: string, isGuest: boolean, mediaState: { camera: boolean, mic: boolean, screenSharing: boolean, isSpeaking: boolean } }>} */
 let participantMeta = {};
+
+export const ROOM_GRACE_PERIOD_MS =
+  parseInt(process.env.ROOM_GRACE_PERIOD_MS, 10) || 15 * 60 * 1000;
+
+/** @type {Record<string, { status: "active" | "empty" | "expired", createdAt: Date, lastParticipantLeftAt: Date | null, expirationTimer: any }>} */
+let roomState = {};
 
 // ── Structured logger ────────────────────────────────────────────────────────
 // Never log raw tokens, passwords, SDP body, or ICE credentials.
@@ -23,9 +30,8 @@ const log = {
 export const connectToSocket = (server) => {
   const io = new Server(server, {
     cors: {
-      origin: "*",
+      origin: allowedOrigins,
       methods: ["GET", "POST"],
-      allowedHeaders: ["*"],
       credentials: true,
     },
   });
@@ -46,9 +52,36 @@ export const connectToSocket = (server) => {
       }
 
       if (members.length === 0) {
-        delete connections[roomPath];
-        delete messages[roomPath];
-        log.info("room_closed", { room: roomPath });
+        const leftAt = new Date();
+        const existingTimer = roomState[roomPath]?.expirationTimer;
+        if (existingTimer) clearTimeout(existingTimer);
+
+        roomState[roomPath] = {
+          status: "empty",
+          createdAt: roomState[roomPath]?.createdAt || leftAt,
+          lastParticipantLeftAt: leftAt,
+          expirationTimer: setTimeout(() => {
+            if (!connections[roomPath] || connections[roomPath].length === 0) {
+              if (roomState[roomPath]) {
+                roomState[roomPath].status = "expired";
+                roomState[roomPath].expirationTimer = null;
+              }
+              delete connections[roomPath];
+              delete messages[roomPath];
+              log.info("room_expired", {
+                room: roomPath,
+                gracePeriodMs: ROOM_GRACE_PERIOD_MS,
+                lastParticipantLeftAt: leftAt,
+              });
+            }
+          }, ROOM_GRACE_PERIOD_MS),
+        };
+
+        log.info("room_empty_grace_period_started", {
+          room: roomPath,
+          gracePeriodMs: ROOM_GRACE_PERIOD_MS,
+          lastParticipantLeftAt: leftAt,
+        });
       }
 
       break;
@@ -64,6 +97,35 @@ export const connectToSocket = (server) => {
 
     // ── join-call ─────────────────────────────────────────────────────────────
     socket.on("join-call", (path, userMeta = {}) => {
+      // Check if room has expired
+      const currentRoom = roomState[path];
+      if (currentRoom && currentRoom.status === "expired") {
+        log.warn("join_rejected_room_expired", { socketId: socket.id, room: path });
+        socket.emit("room-error", {
+          code: "ROOM_EXPIRED",
+          message: "This meeting room has expired because all participants left more than 15 minutes ago.",
+        });
+        return;
+      }
+
+      // Rejoining during grace period: cancel pending expiration timer
+      if (currentRoom && currentRoom.status === "empty") {
+        if (currentRoom.expirationTimer) {
+          clearTimeout(currentRoom.expirationTimer);
+          currentRoom.expirationTimer = null;
+        }
+        currentRoom.status = "active";
+        currentRoom.lastParticipantLeftAt = null;
+        log.info("room_grace_period_cancelled", { socketId: socket.id, room: path });
+      } else if (!currentRoom) {
+        roomState[path] = {
+          status: "active",
+          createdAt: new Date(),
+          lastParticipantLeftAt: null,
+          expirationTimer: null,
+        };
+      }
+
       if (!connections[path]) {
         connections[path] = [];
       }
@@ -214,4 +276,29 @@ export const connectToSocket = (server) => {
   });
 
   return io;
+};
+
+export const getRoomState = (roomPath) => roomState[roomPath] || null;
+
+export const expireRoomImmediately = (roomPath) => {
+  if (roomState[roomPath]) {
+    if (roomState[roomPath].expirationTimer) {
+      clearTimeout(roomState[roomPath].expirationTimer);
+      roomState[roomPath].expirationTimer = null;
+    }
+    roomState[roomPath].status = "expired";
+    delete connections[roomPath];
+    delete messages[roomPath];
+  }
+};
+
+export const resetRoomState = () => {
+  for (const r of Object.values(roomState)) {
+    if (r.expirationTimer) clearTimeout(r.expirationTimer);
+  }
+  connections = {};
+  messages = {};
+  timeOnline = {};
+  participantMeta = {};
+  roomState = {};
 };
