@@ -37,6 +37,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import PeopleIcon from "@mui/icons-material/People";
 import SettingsIcon from "@mui/icons-material/Settings";
 import InsertEmoticonIcon from "@mui/icons-material/InsertEmoticon";
+import TimerOffIcon from "@mui/icons-material/TimerOff";
 import styles from "../styles/videoComponent.module.css";
 import SERVER_URL from "../environment";
 import { AuthContext } from "../contexts/AuthContext";
@@ -154,18 +155,22 @@ export default function VideoMeetComponent() {
   const connectionsRef = useRef({});
   const chatBottomRef = useRef(null);
   const isScreenSharingRef = useRef(false);
-  const preSharingCameraTrackRef = useRef(null);
+  const screenStreamRef = useRef(null); // active display media stream
+  const screenPreviewVideoRef = useRef(null); // <video> element showing local screen in main stage
   const stopScreenShareRef = useRef(null);
   const toastTimeoutRef = useRef(null);
   const audioMeterContextRef = useRef(null);
   const activeCameraIdRef = useRef(localStorage.getItem("sangam_camera_id") || "");
   const activeMicIdRef = useRef(localStorage.getItem("sangam_mic_id") || "");
+  const iceCandidateQueueRef = useRef({});
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [videoAvailable, setVideoAvailable] = useState(false);
   const [audioAvailable, setAudioAvailable] = useState(false);
   const [screenAvailable, setScreenAvailable] = useState(false);
   const [cameraContentionNotice, setCameraContentionNotice] = useState("");
+  const [roomExpired, setRoomExpired] = useState(false);
+  const [roomExpiredMessage, setRoomExpiredMessage] = useState("");
 
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [micEnabled, setMicEnabled] = useState(true);
@@ -244,11 +249,14 @@ export default function VideoMeetComponent() {
     }
   }, [messages, showModal]);
 
-  // ── [ISSUE 1] Lifecycle-Safe Video Binding (Fixes Flickering) ──────────────
+  // ── [ISSUE 1] Lifecycle-Safe Video Binding (Fixes Flickering & Black Screen) ──
   const bindLocalVideo = useCallback((node) => {
     localVideoRef.current = node;
     if (node && localStreamRef.current && node.srcObject !== localStreamRef.current) {
       node.srcObject = localStreamRef.current;
+    }
+    if (node) {
+      node.play().catch(() => {});
     }
   }, []);
 
@@ -257,8 +265,46 @@ export default function VideoMeetComponent() {
       if (localVideoRef.current.srcObject !== localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
       }
+      localVideoRef.current.play().catch(() => {});
     }
   }, [cameraEnabled]);
+
+  const bindScreenPreview = useCallback((node) => {
+    screenPreviewVideoRef.current = node;
+    if (node && screenStreamRef.current && node.srcObject !== screenStreamRef.current) {
+      node.srcObject = screenStreamRef.current;
+    }
+    if (node) {
+      node.play().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (screenPreviewVideoRef.current && screenStreamRef.current) {
+      if (screenPreviewVideoRef.current.srcObject !== screenStreamRef.current) {
+        screenPreviewVideoRef.current.srcObject = screenStreamRef.current;
+      }
+      screenPreviewVideoRef.current.play().catch(() => {});
+    }
+  }, [screenSharing]);
+
+  const bindRemoteVideo = useCallback(
+    (stream) => (node) => {
+      if (!node) return;
+      if (stream && node.srcObject !== stream) {
+        node.srcObject = stream;
+      }
+      node.play().catch(() => {});
+      if (stream) {
+        stream.getVideoTracks().forEach((track) => {
+          track.onunmute = () => {
+            node.play().catch(() => {});
+          };
+        });
+      }
+    },
+    []
+  );
 
   // ── Media Acquisition with Device Contention Fallback ──────────────────────
   const acquireLocalStream = useCallback(
@@ -344,6 +390,10 @@ export default function VideoMeetComponent() {
     getPermissions();
     return () => {
       // Cleanup all media resources on unmount
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current = null;
+      }
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
         localStreamRef.current = null;
@@ -352,6 +402,7 @@ export default function VideoMeetComponent() {
         try { pc.close(); } catch (_) {}
       });
       connectionsRef.current = {};
+      iceCandidateQueueRef.current = {};
       if (socketRef.current) {
         socketRef.current.emit("leave-call");
         socketRef.current.disconnect();
@@ -418,6 +469,23 @@ export default function VideoMeetComponent() {
     };
   }, [askForUsername, micEnabled]);
 
+// Helpers for retrieving dedicated video senders per peer connection
+const getCameraSender = (pc) => {
+  if (!pc) return null;
+  const videoTransceivers = pc
+    .getTransceivers()
+    .filter((t) => t.receiver?.track?.kind === "video" || t.sender?.track?.kind === "video");
+  return videoTransceivers[0]?.sender || null;
+};
+
+const getScreenSender = (pc) => {
+  if (!pc) return null;
+  const videoTransceivers = pc
+    .getTransceivers()
+    .filter((t) => t.receiver?.track?.kind === "video" || t.sender?.track?.kind === "video");
+  return videoTransceivers[1]?.sender || null;
+};
+
   // ── Peer Connection Creation ───────────────────────────────────────────────
   const createPeerConnection = useCallback((remoteSocketId) => {
     const existing = connectionsRef.current[remoteSocketId];
@@ -454,8 +522,24 @@ export default function VideoMeetComponent() {
     };
 
     pc.ontrack = (event) => {
-      const inboundStream = event.streams[0];
-      if (!inboundStream) return;
+      const { track, transceiver } = event;
+      let inboundStream = event.streams[0];
+      if (!inboundStream) {
+        inboundStream = new MediaStream();
+        inboundStream.addTrack(track);
+      }
+
+      const videoTransceivers = pc
+        .getTransceivers()
+        .filter((t) => t.receiver?.track?.kind === "video" || t.sender?.track?.kind === "video");
+      const isScreen = Boolean(videoTransceivers[1] && transceiver === videoTransceivers[1]);
+
+      event.track.onunmute = () => {
+        setParticipants((prev) => {
+          if (!prev[remoteSocketId]) return prev;
+          return { ...prev, [remoteSocketId]: { ...prev[remoteSocketId] } };
+        });
+      };
 
       setParticipants((prev) => {
         const current = prev[remoteSocketId] || {
@@ -464,20 +548,81 @@ export default function VideoMeetComponent() {
           isGuest: true,
           mediaState: { camera: true, mic: true, screenSharing: false, isSpeaking: false },
         };
+
+        if (track.kind === "video") {
+          if (isScreen) {
+            return {
+              ...prev,
+              [remoteSocketId]: {
+                ...current,
+                screenStream: inboundStream,
+                connectionStatus: "connected",
+              },
+            };
+          } else {
+            return {
+              ...prev,
+              [remoteSocketId]: {
+                ...current,
+                cameraStream: inboundStream,
+                stream: inboundStream,
+                connectionStatus: "connected",
+              },
+            };
+          }
+        }
+
+        // Audio track
         return {
           ...prev,
-          [remoteSocketId]: { ...current, stream: inboundStream, connectionStatus: "connected" },
+          [remoteSocketId]: {
+            ...current,
+            audioStream: inboundStream,
+            connectionStatus: "connected",
+          },
         };
       });
     };
 
-    // Attach local tracks
+    // Attach local audio & camera tracks
     const localStream = localStreamRef.current || createBlackSilenceStream();
     if (!localStreamRef.current) localStreamRef.current = localStream;
 
-    localStream.getTracks().forEach((track) => {
-      pc.addTrack(track, localStream);
-    });
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+      pc.addTrack(audioTrack, localStream);
+    } else {
+      try { pc.addTransceiver("audio", { direction: "sendrecv" }); } catch (_) {}
+    }
+
+    const cameraTrack = localStream.getVideoTracks()[0];
+    if (cameraTrack) {
+      pc.addTrack(cameraTrack, localStream);
+    } else {
+      try { pc.addTransceiver("video", { direction: "sendrecv" }); } catch (_) {}
+    }
+
+    // Attach dedicated screen-share transceiver (2nd video transceiver)
+    const existingVideoTransceivers = pc
+      .getTransceivers()
+      .filter((t) => t.receiver?.track?.kind === "video" || t.sender?.track?.kind === "video");
+
+    if (existingVideoTransceivers.length < 2) {
+      try {
+        const screenTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
+        if (isScreenSharingRef.current && screenStreamRef.current) {
+          const screenTrack = screenStreamRef.current.getVideoTracks()[0];
+          if (screenTrack) {
+            screenTransceiver.sender.replaceTrack(screenTrack).catch(() => {});
+          }
+        }
+      } catch (_) {}
+    } else if (isScreenSharingRef.current && screenStreamRef.current) {
+      const screenTrack = screenStreamRef.current.getVideoTracks()[0];
+      if (screenTrack && existingVideoTransceivers[1]?.sender) {
+        existingVideoTransceivers[1].sender.replaceTrack(screenTrack).catch(() => {});
+      }
+    }
 
     connectionsRef.current[remoteSocketId] = pc;
     return pc;
@@ -497,28 +642,45 @@ export default function VideoMeetComponent() {
 
       if (signal.sdp) {
         pc.setRemoteDescription(new RTCSessionDescription(signal.sdp))
-          .then(() => {
-            if (signal.sdp.type === "offer") {
-              return pc.createAnswer();
+          .then(async () => {
+            // Drain any queued ICE candidates for this peer
+            const queued = iceCandidateQueueRef.current[fromId];
+            if (queued && queued.length > 0) {
+              delete iceCandidateQueueRef.current[fromId];
+              for (const cand of queued) {
+                try {
+                  await pc.addIceCandidate(cand);
+                } catch (e) {
+                  rtcLog.warn("drain_ice_candidate_error", { fromId, error: e.message });
+                }
+              }
             }
-          })
-          .then((desc) => {
-            if (!desc) return;
-            return pc.setLocalDescription(desc).then(() => {
+
+            if (signal.sdp.type === "offer") {
+              const desc = await pc.createAnswer();
+              await pc.setLocalDescription(desc);
               socketRef.current?.emit(
                 "signal",
                 fromId,
                 JSON.stringify({ sdp: pc.localDescription })
               );
-            });
+            }
           })
           .catch((e) => rtcLog.error("sdp_error", { fromId, error: e.message }));
       }
 
       if (signal.ice) {
-        pc.addIceCandidate(new RTCIceCandidate(signal.ice)).catch((e) =>
-          rtcLog.warn("ice_candidate_error", { fromId, error: e.message })
-        );
+        const candidate = new RTCIceCandidate(signal.ice);
+        if (!pc.remoteDescription || !pc.remoteDescription.type) {
+          if (!iceCandidateQueueRef.current[fromId]) {
+            iceCandidateQueueRef.current[fromId] = [];
+          }
+          iceCandidateQueueRef.current[fromId].push(candidate);
+        } else {
+          pc.addIceCandidate(candidate).catch((e) =>
+            rtcLog.warn("ice_candidate_error", { fromId, error: e.message })
+          );
+        }
       }
     },
     [createPeerConnection]
@@ -640,7 +802,18 @@ export default function VideoMeetComponent() {
       }
     });
 
+    socketRef.current.on("room-error", (err) => {
+      rtcLog.error("room_error", err);
+      if (err?.code === "ROOM_EXPIRED") {
+        setRoomExpired(true);
+        setRoomExpiredMessage(
+          err.message || "This room has expired due to 15 minutes of inactivity."
+        );
+      }
+    });
+
     socketRef.current.on("user-left", (id) => {
+      delete iceCandidateQueueRef.current[id];
       const pc = connectionsRef.current[id];
       if (pc) {
         try { pc.close(); } catch (_) {}
@@ -672,7 +845,7 @@ export default function VideoMeetComponent() {
       const newTrack = newStream.getVideoTracks()[0];
 
       Object.values(connectionsRef.current).forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+        const sender = getCameraSender(pc);
         if (sender) sender.replaceTrack(newTrack).catch(() => {});
       });
 
@@ -713,7 +886,7 @@ export default function VideoMeetComponent() {
         const newTrack = newStream.getVideoTracks()[0];
 
         Object.values(connectionsRef.current).forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+          const sender = getCameraSender(pc);
           if (sender) sender.replaceTrack(newTrack).catch(() => {});
         });
 
@@ -763,106 +936,89 @@ export default function VideoMeetComponent() {
     [acquireLocalStream]
   );
 
-  // ── Screen Sharing with Audio Fallback & Signaling (Issue 3) ──────────────
   const startScreenShare = useCallback(async () => {
+    let screenStream = null;
     try {
-      let screenStream = null;
-      try {
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true,
-        });
-      } catch (audioErr) {
-        rtcLog.warn("display_media_audio_fallback", { error: audioErr.message });
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: false,
-        });
-      }
-
-      const screenTrack = screenStream.getVideoTracks()[0];
-      if (!screenTrack) return;
-
-      preSharingCameraTrackRef.current =
-        localStreamRef.current?.getVideoTracks()[0] ?? null;
-
-      Object.values(connectionsRef.current).forEach((pc) => {
-        const sender =
-          pc.getSenders().find((s) => s.track?.kind === "video") ||
-          pc.getTransceivers().find((t) => t.receiver?.track?.kind === "video")?.sender;
-        if (sender) {
-          sender.replaceTrack(screenTrack).catch(() => {});
-        }
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "always" },
+        audio: true,
       });
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = screenStream;
-      }
-
-      isScreenSharingRef.current = true;
-      setScreenSharing(true);
-      socketRef.current?.emit("media-state", { screenSharing: true, camera: false });
-
-      screenTrack.onended = () => {
-        stopScreenShareRef.current?.(screenTrack);
-      };
     } catch (err) {
-      rtcLog.warn("screen_share_cancelled", { name: err.name });
-      setScreenSharing(false);
+      // NotAllowedError = user cancelled/denied — do not retry
+      if (err.name === "NotAllowedError" || err.name === "NotFoundError" || err.name === "AbortError") {
+        rtcLog.warn("screen_share_cancelled", { name: err.name });
+        return;
+      }
+      // Only retry without audio for capability errors (e.g. audio not supported)
+      rtcLog.warn("display_media_audio_fallback", { error: err.message });
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      } catch (e2) {
+        rtcLog.warn("screen_share_cancelled", { name: e2.name });
+        return;
+      }
     }
+
+    const screenTrack = screenStream?.getVideoTracks()[0];
+    if (!screenTrack) return;
+
+    screenStreamRef.current = screenStream;
+
+    // Attach screen track to dedicated screen sender on all peer connections
+    Object.values(connectionsRef.current).forEach((pc) => {
+      const screenSender = getScreenSender(pc);
+      if (screenSender) screenSender.replaceTrack(screenTrack).catch(() => {});
+    });
+
+    // Show screen in the dedicated preview element (main stage)
+    if (screenPreviewVideoRef.current) {
+      screenPreviewVideoRef.current.srcObject = screenStream;
+    }
+
+    isScreenSharingRef.current = true;
+    setScreenSharing(true);
+    socketRef.current?.emit("media-state", { screenSharing: true });
+
+    screenTrack.onended = () => {
+      stopScreenShareRef.current?.();
+    };
   }, []);
 
   const stopScreenShare = useCallback(
-    async (endedTrack) => {
+    async () => {
+      if (!isScreenSharingRef.current && !screenStreamRef.current) return;
       isScreenSharingRef.current = false;
       setScreenSharing(false);
 
-      if (endedTrack && endedTrack.readyState === "live") {
-        endedTrack.stop();
+      // Stop the screen track
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current = null;
+      }
+      if (screenPreviewVideoRef.current) {
+        screenPreviewVideoRef.current.srcObject = null;
       }
 
-      let cameraTrack = preSharingCameraTrackRef.current;
-      if (!cameraTrack || cameraTrack.readyState === "ended") {
-        const newStream = await acquireLocalStream(true, false);
-        cameraTrack = newStream?.getVideoTracks()[0] ?? null;
-      }
+      // Detach screen track from dedicated screen sender on all peer connections
+      Object.values(connectionsRef.current).forEach((pc) => {
+        const screenSender = getScreenSender(pc);
+        if (screenSender) screenSender.replaceTrack(null).catch(() => {});
+      });
 
-      if (cameraTrack) {
-        Object.values(connectionsRef.current).forEach((pc) => {
-          const sender =
-            pc.getSenders().find((s) => s.track?.kind === "video") ||
-            pc.getTransceivers().find((t) => t.receiver?.track?.kind === "video")?.sender;
-          if (sender) {
-            sender.replaceTrack(cameraTrack).catch(() => {});
-          }
-        });
-
-        const stream = localStreamRef.current;
-        if (stream) {
-          stream.getVideoTracks().forEach((t) => stream.removeTrack(t));
-          stream.addTrack(cameraTrack);
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-          }
-        }
-      }
-
-      preSharingCameraTrackRef.current = null;
-      socketRef.current?.emit("media-state", { screenSharing: false, camera: cameraEnabled });
+      socketRef.current?.emit("media-state", { screenSharing: false });
     },
-    [acquireLocalStream, cameraEnabled]
+    []
   );
 
   stopScreenShareRef.current = stopScreenShare;
 
   const handleScreen = useCallback(() => {
-    if (screenSharing) {
-      const track = localVideoRef.current?.srcObject?.getVideoTracks()[0];
-      stopScreenShare(track ?? null);
+    if (isScreenSharingRef.current) {
+      stopScreenShare();
     } else {
       startScreenShare();
     }
-  }, [screenSharing, startScreenShare, stopScreenShare]);
+  }, [startScreenShare, stopScreenShare]);
 
   // ── [ISSUE 8] Copy Room Code Only ─────────────────────────────────────────
   const copyRoomCode = useCallback(async () => {
@@ -883,6 +1039,10 @@ export default function VideoMeetComponent() {
   }, [message, username]);
 
   const handleEndCall = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
@@ -916,10 +1076,77 @@ export default function VideoMeetComponent() {
   };
 
   const participantList = Object.values(participants);
+  const remotePresenter = participantList.find((p) => p.mediaState?.screenSharing);
+  const isPresentationActive = Boolean(screenSharing || remotePresenter);
+  const isSelfPresenting = Boolean(screenSharing);
+  const totalInCall = 1 + participantList.length;
+  const galleryGridClass =
+    totalInCall === 1
+      ? styles.gridCount1
+      : totalInCall === 2
+      ? styles.gridCount2
+      : totalInCall <= 4
+      ? styles.gridCount4
+      : totalInCall <= 6
+      ? styles.gridCount6
+      : styles.gridCountMany;
 
   return (
     <div className={styles.videoPageRoot} data-theme="dark">
-      {/* Device Settings Modal */}
+      {roomExpired ? (
+        <div className={styles.lobbyContainer}>
+          <div className={styles.bgAtmosphere}>
+            <div className={styles.glowOrbCoral} />
+            <div className={styles.glowOrbAmber} />
+            <div className={styles.gridPattern} />
+          </div>
+
+          <header className={styles.lobbyHeader}>
+            <div className={styles.navLeft} onClick={() => navigate("/home")}>
+              <img
+                src="/assets/branding/sangam-logo.png"
+                alt="Sangam Connect"
+                className={styles.brandLogo}
+              />
+              <div className={styles.brandTextGroup}>
+                <span className={styles.brandTitle}>Sangam Connect</span>
+                <span className={styles.brandTagline}>ROOM EXPIRED</span>
+              </div>
+            </div>
+          </header>
+
+          <main className={styles.lobbyMain} style={{ display: "flex", justifyContent: "center" }}>
+            <div className={styles.joinCard} style={{ maxWidth: 460, textAlign: "center" }}>
+              <div
+                className={styles.waitingIconPulse}
+                style={{
+                  margin: "0 auto 18px",
+                  background: "rgba(255, 92, 92, 0.12)",
+                  borderColor: "rgba(255, 92, 92, 0.3)",
+                }}
+              >
+                <TimerOffIcon style={{ fontSize: 32, color: "var(--danger, #FF5C5C)" }} />
+              </div>
+              <h1 className={styles.cardHeading} style={{ color: "var(--danger, #FF5C5C)" }}>
+                Meeting Expired
+              </h1>
+              <p className={styles.cardSubtext} style={{ marginBottom: 24 }}>
+                {roomExpiredMessage || "This meeting room has expired due to 15 minutes of inactivity."}
+              </p>
+              <button
+                type="button"
+                className={styles.chatSendBtn}
+                onClick={() => navigate("/home")}
+                style={{ width: "100%", padding: "14px", fontSize: "15px", fontWeight: 700 }}
+              >
+                Return to Home
+              </button>
+            </div>
+          </main>
+        </div>
+      ) : (
+        <>
+          {/* Device Settings Modal */}
       <DeviceSettingsModal
         isOpen={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
@@ -1142,89 +1369,276 @@ export default function VideoMeetComponent() {
 
           {/* Stage Area: Flex layout containing video grid + active side panels */}
           <div className={styles.stageArea}>
-            {/* Main Video Conference Grid */}
-            <main className={styles.conferenceView}>
-              {participantList.length === 0 ? (
-                <div className={styles.soloWaitingContainer}>
-                  <div className={styles.waitingIconPulse}>
-                    <VideocamIcon style={{ fontSize: 32 }} />
-                  </div>
-                  <h3 className={styles.waitingTitle}>Waiting for others to converge...</h3>
-                  <p className={styles.waitingDesc}>
-                    Share this room code <strong>{cleanRoomCode}</strong> with others to start conversing.
-                  </p>
-                  <button
-                    type="button"
-                    className={styles.copyCodeBtn}
-                    onClick={copyRoomCode}
-                    style={{
-                      padding: "10px 18px",
-                      fontSize: "13px",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      background: "var(--accent, #FF7A59)",
-                      color: "#1A0E09",
-                      fontWeight: 700,
-                      borderRadius: "8px",
-                    }}
-                  >
-                    <ContentCopyIcon style={{ fontSize: 14 }} />
-                    {copied ? `Room Code "${cleanRoomCode}" Copied!` : "Copy Room Code"}
-                  </button>
-                </div>
-              ) : (
-                participantList.map((peer) => {
-                  const camOn = peer.mediaState?.camera ?? true;
-                  const screenOn = peer.mediaState?.screenSharing ?? false;
-                  const speaking = peer.mediaState?.isSpeaking ?? false;
+            <div className={styles.mainMediaViewport}>
+              {isPresentationActive ? (
+                /* ── Presentation Mode: Main Stage + Sharer PiP + Bottom Participant Strip ── */
+                <div className={styles.presentationContainer}>
+                  <div className={styles.presentationStage}>
+                    <div className={styles.presentationHeader}>
+                      <ScreenShareIcon style={{ fontSize: 16, color: "var(--accent, #FF7A59)" }} />
+                      <span>
+                        Screen Shared by <strong>{isSelfPresenting ? `You (${username || "Me"})` : (remotePresenter?.username || "Participant")}</strong>
+                      </span>
+                    </div>
 
-                  return (
-                    <div
-                      key={peer.socketId}
-                      className={`${styles.videoWrapper} ${speaking ? styles.speakingRowGlow : ""}`}
-                    >
-                      {camOn || screenOn ? (
+                    <div className={styles.presentationVideoWrapper}>
+                      {isSelfPresenting ? (
                         <video
-                          data-socket={peer.socketId}
-                          ref={(el) => {
-                            if (el && peer.stream && el.srcObject !== peer.stream) {
-                              el.srcObject = peer.stream;
-                            }
-                          }}
+                          ref={bindScreenPreview}
+                          autoPlay
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <video
+                          data-socket={remotePresenter?.socketId}
+                          ref={bindRemoteVideo(remotePresenter?.screenStream || remotePresenter?.stream)}
+                          autoPlay
+                          playsInline
+                        />
+                      )}
+                    </div>
+
+                    {/* Presenter Camera PiP inside Stage */}
+                    <div className={styles.presenterPipTile}>
+                      {isSelfPresenting ? (
+                        cameraEnabled ? (
+                          <video ref={bindLocalVideo} autoPlay muted playsInline style={{ transform: "scaleX(-1)" }} />
+                        ) : (
+                          <div className={styles.avatarPlaceholderTile}>
+                            <div className={styles.avatarInitialCircle} style={{ width: 44, height: 44, fontSize: 16 }}>
+                              {getUserInitials(username || userData?.name)}
+                            </div>
+                          </div>
+                        )
+                      ) : remotePresenter?.mediaState?.camera !== false && (remotePresenter?.cameraStream || remotePresenter?.stream) ? (
+                        <video
+                          data-socket={remotePresenter?.socketId}
+                          ref={bindRemoteVideo(remotePresenter?.cameraStream || remotePresenter?.stream)}
                           autoPlay
                           playsInline
                         />
                       ) : (
-                        /* [ISSUE 10] Polished Avatar Placeholder when camera is off */
                         <div className={styles.avatarPlaceholderTile}>
-                          <div
-                            className={`${styles.avatarInitialCircle} ${
-                              speaking ? styles.speakingRingOuter : ""
-                            }`}
-                          >
-                            {getUserInitials(peer.username)}
+                          <div className={styles.avatarInitialCircle} style={{ width: 44, height: 44, fontSize: 16 }}>
+                            {getUserInitials(remotePresenter?.username || "Presenter")}
                           </div>
-                          <span className={styles.avatarPlaceholderName}>
-                            {peer.username || "Participant"}
-                          </span>
                         </div>
                       )}
-
-                      <div className={styles.participantLabelOverlay}>
-                        <span>
-                          {peer.username || `Participant (${peer.socketId?.slice(0, 5) ?? "?????"})`}
-                          {screenOn ? " (Screen)" : ""}
-                        </span>
-                        {peer.mediaState?.mic === false && (
-                          <MicOffIcon style={{ fontSize: 13, color: "var(--danger, #FF5C5C)" }} />
-                        )}
+                      <div className={styles.localUserTag}>
+                        {isSelfPresenting ? `You (${username || "Me"})` : (remotePresenter?.username || "Presenter")}
                       </div>
                     </div>
-                  );
-                })
+                  </div>
+
+                  {/* Horizontal Participant Strip */}
+                  <div className={styles.presentationStrip}>
+                    {/* If local user is spectator, show local user in strip */}
+                    {!isSelfPresenting && (
+                      <div className={`${styles.stripTile} ${isSpeakingLocal ? styles.speakingRowGlow : ""}`}>
+                        {cameraEnabled ? (
+                          <video ref={bindLocalVideo} autoPlay muted playsInline style={{ transform: "scaleX(-1)" }} />
+                        ) : (
+                          <div className={styles.avatarPlaceholderTile}>
+                            <div className={styles.avatarInitialCircle} style={{ width: 36, height: 36, fontSize: 13 }}>
+                              {getUserInitials(username || userData?.name)}
+                            </div>
+                          </div>
+                        )}
+                        <div className={styles.participantLabelOverlay}>
+                          <span>You ({username || "Me"})</span>
+                          {!micEnabled && (
+                            <MicOffIcon style={{ fontSize: 11, color: "var(--danger, #FF5C5C)" }} />
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* All other participants in strip (except remote presenter) */}
+                    {participantList
+                      .filter((p) => p.socketId !== remotePresenter?.socketId)
+                      .map((peer) => {
+                        const camOn = peer.mediaState?.camera ?? true;
+                        const speaking = peer.mediaState?.isSpeaking ?? false;
+                        const micOn = peer.mediaState?.mic ?? true;
+
+                        return (
+                          <div
+                            key={peer.socketId}
+                            className={`${styles.stripTile} ${speaking ? styles.speakingRowGlow : ""}`}
+                          >
+                            {camOn ? (
+                              <video
+                                data-socket={peer.socketId}
+                                ref={bindRemoteVideo(peer.cameraStream || peer.stream)}
+                                autoPlay
+                                playsInline
+                              />
+                            ) : (
+                              <div className={styles.avatarPlaceholderTile}>
+                                <div className={styles.avatarInitialCircle} style={{ width: 36, height: 36, fontSize: 13 }}>
+                                  {getUserInitials(peer.username)}
+                                </div>
+                              </div>
+                            )}
+                            <div className={styles.participantLabelOverlay}>
+                              <span>{peer.username || `Participant (${peer.socketId?.slice(0, 5) ?? "?????"})`}</span>
+                              {!micOn && (
+                                <MicOffIcon style={{ fontSize: 11, color: "var(--danger, #FF5C5C)" }} />
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              ) : (
+                /* ── Gallery Mode: Responsive Balanced Grids (1x1, 2x1, 2x2, 3x2) ── */
+                <div className={styles.galleryContainer}>
+                  {participantList.length === 0 ? (
+                    <div className={styles.soloWaitingContainer}>
+                      <div className={styles.soloPreviewCard}>
+                        {cameraEnabled ? (
+                          <video
+                            ref={bindLocalVideo}
+                            autoPlay
+                            muted
+                            playsInline
+                            style={{ transform: "scaleX(-1)" }}
+                          />
+                        ) : (
+                          <div className={styles.avatarPlaceholderTile}>
+                            <div
+                              className={`${styles.avatarInitialCircle} ${
+                                isSpeakingLocal ? styles.speakingRingOuter : ""
+                              }`}
+                            >
+                              {getUserInitials(username || userData?.name)}
+                            </div>
+                          </div>
+                        )}
+                        <div className={styles.participantLabelOverlay}>
+                          <span>You ({username || "Me"})</span>
+                        </div>
+                      </div>
+
+                      <div className={styles.waitingIconPulse}>
+                        <VideocamIcon style={{ fontSize: 32 }} />
+                      </div>
+                      <h3 className={styles.waitingTitle}>Waiting for others to converge...</h3>
+                      <p className={styles.waitingDesc}>
+                        Share this room code <strong>{cleanRoomCode}</strong> with others to start conversing.
+                      </p>
+                      <button
+                        type="button"
+                        className={styles.copyCodeBtn}
+                        onClick={copyRoomCode}
+                        style={{
+                          padding: "10px 18px",
+                          fontSize: "13px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          background: "var(--accent, #FF7A59)",
+                          color: "#1A0E09",
+                          fontWeight: 700,
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <ContentCopyIcon style={{ fontSize: 14 }} />
+                        {copied ? `Room Code "${cleanRoomCode}" Copied!` : "Copy Room Code"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className={`${styles.galleryGrid} ${galleryGridClass}`}>
+                      {/* Local User Tile in Gallery Grid */}
+                      <div
+                        className={`${styles.videoWrapper} ${
+                          isSpeakingLocal ? styles.speakingRowGlow : ""
+                        }`}
+                      >
+                        {cameraEnabled ? (
+                          <video
+                            ref={bindLocalVideo}
+                            autoPlay
+                            muted
+                            playsInline
+                            style={{ transform: "scaleX(-1)" }}
+                          />
+                        ) : (
+                          <div className={styles.avatarPlaceholderTile}>
+                            <div
+                              className={`${styles.avatarInitialCircle} ${
+                                isSpeakingLocal ? styles.speakingRingOuter : ""
+                              }`}
+                            >
+                              {getUserInitials(username || userData?.name)}
+                            </div>
+                            <span className={styles.avatarPlaceholderName}>
+                              {username || "You"}
+                            </span>
+                          </div>
+                        )}
+                        <div className={styles.participantLabelOverlay}>
+                          <span>You ({username || "Me"})</span>
+                          {!micEnabled && (
+                            <MicOffIcon style={{ fontSize: 13, color: "var(--danger, #FF5C5C)" }} />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Remote Participants in Gallery Grid */}
+                      {participantList.map((peer) => {
+                        const camOn = peer.mediaState?.camera ?? true;
+                        const speaking = peer.mediaState?.isSpeaking ?? false;
+                        const micOn = peer.mediaState?.mic ?? true;
+
+                        return (
+                          <div
+                            key={peer.socketId}
+                            className={`${styles.videoWrapper} ${
+                              speaking ? styles.speakingRowGlow : ""
+                            }`}
+                          >
+                            {camOn ? (
+                              <video
+                                data-socket={peer.socketId}
+                                ref={bindRemoteVideo(peer.cameraStream || peer.stream)}
+                                autoPlay
+                                playsInline
+                              />
+                            ) : (
+                              <div className={styles.avatarPlaceholderTile}>
+                                <div
+                                  className={`${styles.avatarInitialCircle} ${
+                                    speaking ? styles.speakingRingOuter : ""
+                                  }`}
+                                >
+                                  {getUserInitials(peer.username)}
+                                </div>
+                                <span className={styles.avatarPlaceholderName}>
+                                  {peer.username || "Participant"}
+                                </span>
+                              </div>
+                            )}
+
+                            <div className={styles.participantLabelOverlay}>
+                              <span>
+                                {peer.username ||
+                                  `Participant (${peer.socketId?.slice(0, 5) ?? "?????"})`}
+                              </span>
+                              {!micOn && (
+                                <MicOffIcon style={{ fontSize: 13, color: "var(--danger, #FF5C5C)" }} />
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
-            </main>
+            </div>
 
             {/* Participants Panel (Issue 9) */}
             <ParticipantsPanel
@@ -1330,31 +1744,6 @@ export default function VideoMeetComponent() {
             )}
           </div>
 
-          {/* Local User PIP Tile */}
-          <div
-            className={`${styles.meetUserVideo} ${
-              showModal || showParticipants ? styles.meetUserVideoShifted : ""
-            }`}
-          >
-            {cameraEnabled && !screenSharing ? (
-              <video ref={bindLocalVideo} autoPlay muted playsInline />
-            ) : (
-              <div className={styles.avatarPlaceholderTile} style={{ borderRadius: 10 }}>
-                <div
-                  className={`${styles.participantAvatar} ${
-                    isSpeakingLocal ? styles.avatarSpeakingRing : ""
-                  }`}
-                  style={{ width: 48, height: 48, fontSize: 18 }}
-                >
-                  {getUserInitials(username || userData?.name)}
-                </div>
-              </div>
-            )}
-            <div className={styles.localUserTag}>
-              You ({username || "Me"}) {screenSharing ? "(Sharing)" : ""}
-            </div>
-          </div>
-
           {/* Meeting Controls Bar */}
           <nav className={styles.buttonContainers} aria-label="Meeting Controls">
             <button
@@ -1425,6 +1814,8 @@ export default function VideoMeetComponent() {
             </button>
           </nav>
         </div>
+      )}
+        </>
       )}
     </div>
   );

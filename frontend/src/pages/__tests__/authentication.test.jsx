@@ -20,7 +20,13 @@ const mockAuthContext = {
   handleRegister: jest.fn(),
   handleVerifyEmail: jest.fn(),
   handleResendVerification: jest.fn(),
-  handleLogin: jest.fn(),
+  handleLogin: jest.fn().mockResolvedValue({
+    accessToken: "mock-access-token",
+    refreshToken: "mock-refresh-token",
+    token: "mock-access-token",
+    user: { id: "user-1", name: "User", email: "user@example.com" },
+  }),
+  handleLogout: jest.fn().mockResolvedValue({}),
   pendingVerifyEmail: "",
 };
 
