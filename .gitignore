@@ -9,6 +9,8 @@ backend/.env
 .env.local
 .env.production
 .env.*.local
+*.pem
+*.key
 
 # Build outputs
 dist/
@@ -49,3 +51,4 @@ coverage/
 yarn.lock
 Screenshot *.png
 dicord architecture - *.png
+skills-lock.json
