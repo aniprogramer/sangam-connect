@@ -1,9 +1,62 @@
 import { User } from "../models/user.model.js";
 import { Meeting } from "../models/meeting.model.js";
+import { RefreshToken } from "../models/refreshToken.model.js";
 import httpStatus from "http-status";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
 import { sendVerificationEmail } from "../services/email.service.js";
+
+const hashToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+export const generateAccessToken = (user) => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error("JWT_SECRET is missing");
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    {
+      sub: user._id.toString(),
+      email: user.email,
+      iss: "sangam",
+      iat: now,
+      exp: now + 15 * 60, // 15 minutes
+    },
+    secret
+  );
+};
+
+export const generateRefreshToken = async (user) => {
+  const rawToken = crypto.randomBytes(48).toString("base64url");
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+  await RefreshToken.create({
+    userId: user._id,
+    tokenHash,
+    expiresAt,
+  });
+
+  return rawToken;
+};
+
+const authenticateRequest = async (req) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+  const token = authHeader.substring(7);
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+
+  try {
+    const decoded = jwt.verify(token, secret);
+    const user = await User.findById(decoded.sub);
+    return user || null;
+  } catch (err) {
+    return null;
+  }
+};
 
 /**
  * Generates a unique, URL-safe publicCallId from name + random suffix
@@ -327,12 +380,13 @@ const login = async (req, res) => {
       });
     }
 
-    const token = crypto.randomBytes(32).toString("hex");
-    user.token = token;
-    await user.save();
+    const accessToken = generateAccessToken(user);
+    const refreshToken = await generateRefreshToken(user);
 
     return res.status(httpStatus.OK).json({
-      token,
+      accessToken,
+      refreshToken,
+      token: accessToken,
       user: {
         id: user._id,
         name: user.name,
@@ -350,30 +404,70 @@ const login = async (req, res) => {
 };
 
 /**
- * Current User (/me) - Restores active session
+ * Refresh Token handler (Amendment 4 & Amendment 8)
+ * Rotates refresh tokens and detects reuse
  */
-const getCurrentUser = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : req.query.token || req.body.token;
-
-  if (!token) {
+const refresh = async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
     return res
-      .status(httpStatus.UNAUTHORIZED)
-      .json({ message: "No authentication token provided." });
+      .status(httpStatus.BAD_REQUEST)
+      .json({ message: "Refresh token is required." });
   }
 
   try {
-    const user = await User.findOne({ token });
+    const tokenHash = hashToken(refreshToken);
+    const record = await RefreshToken.findOne({ tokenHash });
+
+    if (!record) {
+      return res
+        .status(httpStatus.UNAUTHORIZED)
+        .json({ message: "Invalid refresh token" });
+    }
+
+    // Reuse detection (Amendment 4)
+    if (record.revokedAt != null) {
+      await RefreshToken.updateMany(
+        { userId: record.userId, revokedAt: null },
+        { revokedAt: new Date() }
+      );
+      console.warn(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          level: "warn",
+          event: "refresh_token_reuse_detected",
+          userId: record.userId.toString(),
+        })
+      );
+      return res.status(httpStatus.UNAUTHORIZED).json({
+        message: "Refresh token reuse detected. Please sign in again.",
+      });
+    }
+
+    if (new Date() > new Date(record.expiresAt)) {
+      return res
+        .status(httpStatus.UNAUTHORIZED)
+        .json({ message: "Refresh token expired" });
+    }
+
+    // Valid token: revoke current record, mint new refresh token, mint new access token
+    record.revokedAt = new Date();
+    await record.save();
+
+    const user = await User.findById(record.userId);
     if (!user) {
       return res
         .status(httpStatus.UNAUTHORIZED)
-        .json({ message: "Invalid or expired session token." });
+        .json({ message: "User not found" });
     }
 
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = await generateRefreshToken(user);
+
     return res.status(httpStatus.OK).json({
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+      token: newAccessToken,
       user: {
         id: user._id,
         name: user.name,
@@ -383,29 +477,49 @@ const getCurrentUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get current user error:", error);
+    console.error("Refresh error:", error);
     return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
-      message: "Failed to restore user session.",
+      message: "Failed to refresh token.",
     });
   }
 };
 
 /**
- * Logout handler - Clears session token
+ * Current User (/me) - Restores active session using Bearer JWT
+ */
+const getCurrentUser = async (req, res) => {
+  const user = await authenticateRequest(req);
+  if (!user) {
+    return res
+      .status(httpStatus.UNAUTHORIZED)
+      .json({ message: "Invalid or expired session token." });
+  }
+
+  return res.status(httpStatus.OK).json({
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      publicCallId: user.publicCallId || user.username,
+      isEmailVerified: user.isEmailVerified,
+    },
+  });
+};
+
+/**
+ * Logout handler - Revokes refresh token (Amendment 12)
+ * Does not require a valid access token
  */
 const logout = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : req.query.token || req.body.token;
+  const { refreshToken } = req.body;
 
-  if (token) {
+  if (refreshToken) {
     try {
-      const user = await User.findOne({ token });
-      if (user) {
-        user.token = null;
-        await user.save();
+      const tokenHash = hashToken(refreshToken);
+      const record = await RefreshToken.findOne({ tokenHash });
+      if (record && !record.revokedAt) {
+        record.revokedAt = new Date();
+        await record.save();
       }
     } catch (err) {
       console.error("Logout error:", err);
@@ -414,21 +528,18 @@ const logout = async (req, res) => {
 
   return res
     .status(httpStatus.OK)
-    .json({ message: "Logged out successfully." });
+    .json({ message: "Logged out" });
 };
 
 const getUserHistory = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    (authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : null) || req.query.token || req.body.token;
+  const user = await authenticateRequest(req);
+  if (!user) {
+    return res
+      .status(httpStatus.UNAUTHORIZED)
+      .json({ message: "Authentication required" });
+  }
 
   try {
-    const user = await User.findOne({ token: token });
-    if (!user) {
-      return res.status(httpStatus.UNAUTHORIZED).json({ message: "Invalid token" });
-    }
     const meetings = await Meeting.find({ user_id: user.username }).sort({ date: -1 });
     res.json(meetings);
   } catch (e) {
@@ -437,19 +548,16 @@ const getUserHistory = async (req, res) => {
 };
 
 const addToHistory = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    (authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : null) || req.body.token;
+  const user = await authenticateRequest(req);
+  if (!user) {
+    return res
+      .status(httpStatus.UNAUTHORIZED)
+      .json({ message: "Authentication required" });
+  }
+
   const meeting_code = req.body.meeting_code || req.body.meetingCode;
 
   try {
-    const user = await User.findOne({ token: token });
-    if (!user) {
-      return res.status(httpStatus.UNAUTHORIZED).json({ message: "Invalid token" });
-    }
-
     const newMeeting = new Meeting({
       user_id: user.username,
       meetingCode: meeting_code,
@@ -464,20 +572,16 @@ const addToHistory = async (req, res) => {
 };
 
 const deleteHistoryItem = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    (authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : null) || req.query.token || req.body.token;
+  const user = await authenticateRequest(req);
+  if (!user) {
+    return res
+      .status(httpStatus.UNAUTHORIZED)
+      .json({ message: "Authentication required" });
+  }
 
   const meetingId = req.params.id || req.body.meetingId || req.body.id;
 
   try {
-    const user = await User.findOne({ token });
-    if (!user) {
-      return res.status(httpStatus.UNAUTHORIZED).json({ message: "Invalid token" });
-    }
-
     const meeting = await Meeting.findOneAndDelete({
       _id: meetingId,
       user_id: user.username,
@@ -496,20 +600,15 @@ const deleteHistoryItem = async (req, res) => {
 };
 
 const clearAllHistory = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token =
-    (authHeader && authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : null) || req.query.token || req.body.token;
+  const user = await authenticateRequest(req);
+  if (!user) {
+    return res
+      .status(httpStatus.UNAUTHORIZED)
+      .json({ message: "Authentication required" });
+  }
 
   try {
-    const user = await User.findOne({ token });
-    if (!user) {
-      return res.status(httpStatus.UNAUTHORIZED).json({ message: "Invalid token" });
-    }
-
     await Meeting.deleteMany({ user_id: user.username });
-
     return res.status(httpStatus.OK).json({ message: "All meeting history cleared successfully" });
   } catch (e) {
     return res
@@ -523,6 +622,7 @@ export {
   register,
   verifyEmail,
   resendVerification,
+  refresh,
   getCurrentUser,
   logout,
   getUserHistory,
