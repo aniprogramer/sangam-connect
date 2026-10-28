@@ -32,6 +32,8 @@ export const validateConfig = (env = process.env) => {
     LIVEKIT_API_SECRET: env.LIVEKIT_API_SECRET || "devsecret",
     LIVEKIT_URL: env.LIVEKIT_URL || (env.NODE_ENV === "production" ? "wss://sangam.livekit.cloud" : "ws://localhost:7880"),
     REDIS_URL: env.REDIS_URL || "",
+    LARGE_ROOM_THRESHOLD: parseInt(env.LARGE_ROOM_THRESHOLD, 10) || 50,
+    MAX_PARTICIPANTS: parseInt(env.MAX_PARTICIPANTS, 10) || 500,
     NODE_ENV: env.NODE_ENV || "development",
   });
 };

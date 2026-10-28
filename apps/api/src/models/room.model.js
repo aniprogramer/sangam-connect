@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { ROLES } from "../services/livekit.service.js";
 
 const roomSchema = new Schema(
   {
@@ -9,10 +10,22 @@ const roomSchema = new Schema(
       index: true,
       trim: true,
     },
+    // Role key of the host: userId for signed-in users, LiveKit identity for guests.
     creatorId: {
       type: String,
       default: null,
       trim: true,
+    },
+    // Role key -> role, set by host/cohost promote/demote.
+    roles: {
+      type: Map,
+      of: { type: String, enum: ROLES },
+      default: {},
+    },
+    // Last count reported by LiveKit webhooks; fallback when the SFU API is unreachable.
+    participantCount: {
+      type: Number,
+      default: 0,
     },
     status: {
       type: String,

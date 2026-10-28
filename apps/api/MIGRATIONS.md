@@ -34,5 +34,5 @@
 - **Git History Purge:** To ensure the leaked secret does not persist in git history, run `git filter-repo` or BFG Repo-Cleaner:
   ```bash
   # Example using git filter-repo to scrub the credential
-  git filter-repo --replace-text <(echo "mongodb+srv://<username>:<password>@cluster0.mongodb.net/sangam>REDACTED")
+  git filter-repo --replace-text <(echo "<LEAKED_MONGODB_URI>==>REDACTED")
   ```

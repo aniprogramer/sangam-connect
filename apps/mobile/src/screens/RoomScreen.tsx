@@ -92,7 +92,9 @@ function MeetingView({ roomName, onLeave }: { roomName: string; onLeave: () => v
 }
 
 export default function RoomScreen({ route, navigation }: any) {
-  const { roomName, token, serverUrl } = route.params || {};
+  const { roomName, token, serverUrl, role } = route.params || {};
+  // Attendees are listen-only until a host promotes them.
+  const canPublish = role !== "attendee";
 
   const handleDisconnected = () => {
     navigation.replace("Home");
@@ -114,8 +116,8 @@ export default function RoomScreen({ route, navigation }: any) {
       token={token}
       serverUrl={serverUrl}
       connect
-      audio
-      video
+      audio={canPublish}
+      video={canPublish}
       onDisconnected={handleDisconnected}
       style={{ flex: 1, backgroundColor: palette.bgApp }}
     >

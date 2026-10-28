@@ -48,9 +48,11 @@ export const logoutSchema = z.object({
   refreshToken: z.string().optional(),
 });
 
+// identity, isGuest and roomAdmin are accepted for older clients but ignored:
+// the server assigns identity and role.
 export const livekitTokenSchema = z.object({
   roomName: z.string().trim().min(1, "roomName is required."),
-  identity: z.string().trim().min(1, "identity is required."),
+  identity: z.string().trim().optional(),
   name: z.string().trim().optional(),
   isGuest: z.boolean().optional(),
   avatar: z.string().nullable().optional(),
@@ -85,11 +87,12 @@ export const moderationSchema = z.object({
     "toggle-waiting-room",
   ]),
   targetIdentity: z.string().optional(),
-  callerIdentity: z.string().optional(),
 });
 
-export const recordingSchema = z.object({
-  callerIdentity: z.string().optional(),
+export const recordingSchema = z.object({});
+
+export const roleChangeSchema = z.object({
+  role: z.enum(["cohost", "speaker", "attendee"]),
 });
 
 export const breakoutSchema = z.object({
@@ -100,7 +103,6 @@ export const breakoutSchema = z.object({
       participants: z.array(z.string()).default([]),
     })
   ),
-  callerIdentity: z.string().optional(),
 });
 
 export const chatUploadSchema = z.object({

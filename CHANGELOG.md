@@ -2,6 +2,28 @@
 
 All notable changes to the Sangam Connect platform are documented in this file.
 
+## [2.5.0] - Unreleased
+
+### Large Rooms — Phase 1: Role-Based Publishing
+
+- **Room roles** (`host`, `cohost`, `speaker`, `attendee`) are resolved server-side only. The room creator is host. Roles are stored on the room by user id (or by LiveKit identity for guests), so they survive a rejoin.
+- **`POST /api/v1/livekit/token`**:
+  - The server now assigns the LiveKit identity (`u-<userId>-<rand>` or `g-<rand>`). Client `identity`, `isGuest` and `roomAdmin` are accepted but ignored.
+  - Grants depend on the role: attendees get `canPublish: false` and `canPublishData: false`, and keep `canSubscribe`. The role is included in token metadata.
+  - The response adds `identity` and `role`.
+- **`LARGE_ROOM_THRESHOLD`** (default 50): once a room reaches this many participants, new joiners default to attendee. Smaller rooms behave as before (everyone is a speaker).
+- **`MAX_PARTICIPANTS`** (default 500): a token request beyond the cap returns `403 { code: "ROOM_FULL" }`. The host is always admitted.
+- **New `POST /api/v1/rooms/:roomId/participants/:identity/role`** (host/cohost):
+  - Promotes or demotes a participant live via `livekit-server-sdk` `RoomServiceClient.updateParticipant`, then broadcasts `room-moderation` `{ action: "role-changed" }`.
+  - Only the host can add or remove co-hosts.
+- **Hand-raise to speak**: in the participants panel, hosts can choose "Allow to speak" for attendees (highlighted when the hand is raised), "Audience" for speakers, and "Co-host"/"Uncohost". Attendees see no camera, mic or screen-share controls until promoted.
+- **Security**:
+  - Moderation, recording and breakout endpoints now require the caller's LiveKit token (`Authorization: Bearer`) and a host/cohost role. `callerIdentity` in request bodies is no longer trusted.
+  - Clients can no longer broadcast `room-moderation` over Socket.IO.
+- **Webhook fix**: `/api/v1/livekit/webhook` now parses LiveKit's `application/webhook+json` body (it was ignored before), verifies the signature against the raw bytes, and stores `participantCount`.
+- **Mobile**: the token request drops the client identity, and attendees join without publishing.
+- Removed a leaked credential literal from `apps/api/MIGRATIONS.md`.
+
 ## [2.4.0] - 2026-10-15
 
 ### Authentication Page Light Theme Implementation

@@ -7,6 +7,18 @@ import VideocamOffIcon from "@mui/icons-material/VideocamOff";
 import ScreenShareIcon from "@mui/icons-material/ScreenShare";
 import styles from "../styles/videoComponent.module.css";
 
+const ROLE_LABELS = { host: "Host", cohost: "Co-host", speaker: "Speaker", attendee: "Audience" };
+
+const roleBtnStyle = {
+  padding: "0.15rem 0.35rem",
+  fontSize: "0.7rem",
+  background: "rgba(255, 255, 255, 0.1)",
+  color: "#fff",
+  border: "none",
+  borderRadius: "3px",
+  cursor: "pointer",
+};
+
 export default function ParticipantsPanel({
   isOpen,
   onClose,
@@ -23,6 +35,8 @@ export default function ParticipantsPanel({
   onMuteParticipant = () => {},
   onRemoveParticipant = () => {},
   onTransferHost = () => {},
+  onSetRole = () => {},
+  canManageCohosts = isHost,
 }) {
   if (!isOpen) return null;
 
@@ -251,6 +265,7 @@ export default function ParticipantsPanel({
                   {renderBadge(p.isGuest)}
                 </div>
                 <span className={styles.participantRoleSubtitle}>
+                  {p.role && p.role !== "speaker" ? `${ROLE_LABELS[p.role]} · ` : ""}
                   {p.connectionStatus || "Connected"}
                 </span>
               </div>
@@ -286,8 +301,44 @@ export default function ParticipantsPanel({
                     <MicOffIcon style={{ fontSize: 16, color: "var(--danger, #FF5C5C)" }} />
                   )}
                 </span>
-                {isHost && (
+                {isHost && p.role !== "host" && (
                   <div style={{ display: "flex", gap: "0.25rem", marginLeft: "0.35rem" }}>
+                    {p.role === "attendee" && (
+                      <button
+                        type="button"
+                        title="Let this attendee use camera and microphone"
+                        onClick={() => onSetRole(p.identity || p.socketId, "speaker")}
+                        style={{
+                          ...roleBtnStyle,
+                          background: hasHandRaised ? "var(--accent, #FF7A59)" : roleBtnStyle.background,
+                          color: hasHandRaised ? "#1A0E09" : roleBtnStyle.color,
+                        }}
+                      >
+                        Allow to speak
+                      </button>
+                    )}
+                    {p.role === "speaker" && (
+                      <button
+                        type="button"
+                        title="Move to audience (listen only)"
+                        onClick={() => onSetRole(p.identity || p.socketId, "attendee")}
+                        style={roleBtnStyle}
+                      >
+                        Audience
+                      </button>
+                    )}
+                    {canManageCohosts && (p.role === "speaker" || p.role === "cohost") && (
+                      <button
+                        type="button"
+                        title={p.role === "cohost" ? "Remove co-host" : "Make co-host"}
+                        onClick={() =>
+                          onSetRole(p.identity || p.socketId, p.role === "cohost" ? "speaker" : "cohost")
+                        }
+                        style={roleBtnStyle}
+                      >
+                        {p.role === "cohost" ? "Uncohost" : "Co-host"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       title="Mute participant"
@@ -320,6 +371,7 @@ export default function ParticipantsPanel({
                     >
                       Kick
                     </button>
+                    {canManageCohosts && (
                     <button
                       type="button"
                       title="Transfer host role"
@@ -336,6 +388,7 @@ export default function ParticipantsPanel({
                     >
                       Host
                     </button>
+                    )}
                   </div>
                 )}
               </div>

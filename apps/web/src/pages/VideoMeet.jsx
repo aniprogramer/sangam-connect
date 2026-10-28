@@ -117,6 +117,15 @@ const getUserInitials = (name) => {
   return parts[0].substring(0, 2).toUpperCase();
 };
 
+// Role is set server-side in LiveKit participant metadata.
+const parseRole = (metadata) => {
+  try {
+    return JSON.parse(metadata || "{}").role || "speaker";
+  } catch (_) {
+    return "speaker";
+  }
+};
+
 /**
  * LiveKitMeetingStage — The in-call meeting view inside LiveKitRoom context
  */
@@ -127,7 +136,8 @@ function LiveKitMeetingStage({
   socketRef,
   onLeave,
   userData,
-  isHost: initialIsHost = false,
+  livekitToken,
+  role: initialRole = "speaker",
   isLocked: initialIsLocked = false,
   isRecording: initialIsRecording = false,
 }) {
@@ -138,7 +148,10 @@ function LiveKitMeetingStage({
   const participants = useParticipants();
   const { localParticipant } = useLocalParticipant();
 
-  const [isHost, setIsHost] = useState(initialIsHost);
+  const [role, setRole] = useState(initialRole);
+  const isHost = role === "host" || role === "cohost";
+  // Attendees join listen-only; LiveKit permissions update live when promoted.
+  const canPublish = localParticipant?.permissions?.canPublish ?? role !== "attendee";
   const [isLocked, setIsLocked] = useState(initialIsLocked);
   const [isRecording, setIsRecording] = useState(initialIsRecording);
   const [waitingParticipants, setWaitingParticipants] = useState([]);
@@ -301,7 +314,12 @@ function LiveKitMeetingStage({
         setIsLocked(false);
       } else if (data.action === "transfer-host") {
         if (data.targetIdentity === localParticipant?.identity || data.targetIdentity === socket.id) {
-          setIsHost(true);
+          setRole("host");
+        }
+      } else if (data.action === "role-changed") {
+        if (data.targetIdentity === localParticipant?.identity) {
+          setRole(data.role);
+          if (data.role !== "attendee") setIsHandRaised(false);
         }
       }
     };
@@ -473,103 +491,49 @@ function LiveKitMeetingStage({
     });
   }, []);
 
-  const handleToggleRecording = useCallback(async () => {
+  // Host/cohost actions authenticate with this participant's LiveKit token; the server
+  // checks the role and broadcasts the result over Socket.IO.
+  const moderationFetch = useCallback(
+    (path, body = {}) =>
+      fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${livekitToken}` },
+        body: JSON.stringify(body),
+      }).catch(() => {}),
+    [cleanRoomCode, livekitToken]
+  );
+
+  const handleToggleRecording = useCallback(() => {
     const nextRec = !isRecording;
     setIsRecording(nextRec);
-    const endpoint = nextRec ? "start" : "stop";
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/recording/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ callerIdentity: username }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("recording-status", { isRecording: nextRec });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, isRecording, socketRef, username]);
+    moderationFetch(`recording/${nextRec ? "start" : "stop"}`);
+  }, [isRecording, moderationFetch]);
 
-  const handleMuteAll = useCallback(async () => {
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/moderation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "mute-all" }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("room-moderation", { action: "mute-all", roomId: cleanRoomCode });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, socketRef]);
+  const handleMuteAll = useCallback(() => {
+    moderationFetch("moderation", { action: "mute-all" });
+  }, [moderationFetch]);
 
-  const handleToggleLock = useCallback(async () => {
+  const handleToggleLock = useCallback(() => {
     const nextLocked = !isLocked;
     setIsLocked(nextLocked);
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/moderation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: nextLocked ? "lock-room" : "unlock-room" }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("room-moderation", {
-          action: nextLocked ? "lock-room" : "unlock-room",
-          roomId: cleanRoomCode,
-        });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, isLocked, socketRef]);
+    moderationFetch("moderation", { action: nextLocked ? "lock-room" : "unlock-room" });
+  }, [isLocked, moderationFetch]);
 
-  const handleMuteParticipant = useCallback(async (targetId) => {
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/moderation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "mute-individual", targetIdentity: targetId }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("room-moderation", {
-          action: "mute-individual",
-          targetIdentity: targetId,
-          roomId: cleanRoomCode,
-        });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, socketRef]);
+  const handleMuteParticipant = useCallback((targetId) => {
+    moderationFetch("moderation", { action: "mute-individual", targetIdentity: targetId });
+  }, [moderationFetch]);
 
-  const handleRemoveParticipant = useCallback(async (targetId) => {
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/moderation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "remove-participant", targetIdentity: targetId }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("room-moderation", {
-          action: "remove-participant",
-          targetIdentity: targetId,
-          roomId: cleanRoomCode,
-        });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, socketRef]);
+  const handleRemoveParticipant = useCallback((targetId) => {
+    moderationFetch("moderation", { action: "remove-participant", targetIdentity: targetId });
+  }, [moderationFetch]);
 
-  const handleTransferHost = useCallback(async (targetId) => {
-    try {
-      await fetch(`${SERVER_URL}/api/v1/rooms/${cleanRoomCode}/moderation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "transfer-host", targetIdentity: targetId }),
-      });
-      if (socketRef.current) {
-        socketRef.current.emit("room-moderation", {
-          action: "transfer-host",
-          targetIdentity: targetId,
-          roomId: cleanRoomCode,
-        });
-      }
-    } catch (_) {}
-  }, [cleanRoomCode, socketRef]);
+  const handleTransferHost = useCallback((targetId) => {
+    moderationFetch("moderation", { action: "transfer-host", targetIdentity: targetId });
+  }, [moderationFetch]);
+
+  const handleSetRole = useCallback((targetId, nextRole) => {
+    moderationFetch(`participants/${encodeURIComponent(targetId)}/role`, { role: nextRole });
+  }, [moderationFetch]);
 
   const handleAdmit = useCallback((wp) => {
     if (socketRef.current) {
@@ -642,9 +606,9 @@ function LiveKitMeetingStage({
         return;
       }
       const key = e.key.toUpperCase();
-      if (key === "M") toggleMic();
-      else if (key === "V") toggleCamera();
-      else if (key === "S") toggleScreenShare();
+      if (canPublish && key === "M") toggleMic();
+      else if (canPublish && key === "V") toggleCamera();
+      else if (canPublish && key === "S") toggleScreenShare();
       else if (key === "H") handleToggleHandRaise();
       else if (key === "C") toggleChat();
       else if (key === "P") toggleParticipants();
@@ -652,7 +616,7 @@ function LiveKitMeetingStage({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggleMic, toggleCamera, toggleScreenShare, handleToggleHandRaise, toggleChat, toggleParticipants]);
+  }, [canPublish, toggleMic, toggleCamera, toggleScreenShare, handleToggleHandRaise, toggleChat, toggleParticipants]);
 
   // SpeechRecognition setup for Live Captions
   useEffect(() => {
@@ -731,6 +695,8 @@ function LiveKitMeetingStage({
     .filter((p) => !p.isLocal)
     .map((p) => ({
       socketId: p.identity,
+      identity: p.identity,
+      role: parseRole(p.metadata),
       username: p.name || `Participant (${p.identity.slice(0, 5)})`,
       isGuest: false,
       connectionStatus: p.connectionQuality === "poor" ? "degraded" : "connected",
@@ -1508,6 +1474,8 @@ function LiveKitMeetingStage({
           onMuteParticipant={handleMuteParticipant}
           onRemoveParticipant={handleRemoveParticipant}
           onTransferHost={handleTransferHost}
+          onSetRole={handleSetRole}
+          canManageCohosts={role === "host"}
         />
 
         {/* In-Call Messages Side Panel */}
@@ -1676,6 +1644,7 @@ function LiveKitMeetingStage({
 
       {/* Meeting Controls Bar */}
       <nav className={styles.buttonContainers} aria-label="Meeting Controls">
+        {canPublish && (<>
         <button
           type="button"
           className={`${styles.actionCircleBtn} ${
@@ -1724,6 +1693,7 @@ function LiveKitMeetingStage({
             <ScreenShareIcon />
           )}
         </button>
+        </>)}
 
         <button
           type="button"
@@ -1851,8 +1821,9 @@ export default function VideoMeetComponent() {
   const [roomExpiredMessage, setRoomExpiredMessage] = useState("");
   const [roomLocked, setRoomLocked] = useState(false);
   const [roomLockedMessage, setRoomLockedMessage] = useState("");
+  const [roomFull, setRoomFull] = useState(false);
   const [isWaitingApproval, setIsWaitingApproval] = useState(false);
-  const [isHost, setIsHost] = useState(false);
+  const [role, setRole] = useState("speaker");
   const [isLocked, setIsLocked] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -1951,17 +1922,17 @@ export default function VideoMeetComponent() {
       previewStreamRef.current = null;
     }
 
-    const userIdentity = `${username.trim().toLowerCase().replace(/\s+/g, "-")}-${Date.now().toString(36)}`;
-
     try {
+      // Server assigns identity and role; the access token (if any) identifies the user.
       const res = await fetch(`${SERVER_URL}/api/v1/livekit/token`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           roomName: cleanRoomCode,
-          identity: userIdentity,
           name: username.trim(),
-          isGuest: !userData?.id,
         }),
       });
 
@@ -1972,8 +1943,9 @@ export default function VideoMeetComponent() {
           setRoomExpiredMessage(data.message);
           return;
         }
-        if (data.code === "ROOM_LOCKED") {
+        if (data.code === "ROOM_LOCKED" || data.code === "ROOM_FULL") {
           setRoomLocked(true);
+          setRoomFull(data.code === "ROOM_FULL");
           setRoomLockedMessage(data.message || "This room has been locked by the host.");
           return;
         }
@@ -1985,9 +1957,10 @@ export default function VideoMeetComponent() {
 
       const data = await res.json();
       const { token, url: wsUrl } = data;
+      const userIdentity = data.identity;
       setLivekitToken(token);
       setLivekitWsUrl(wsUrl);
-      setIsHost(Boolean(data.isHost));
+      setRole(data.role || (data.isHost ? "host" : "speaker"));
       setIsLocked(Boolean(data.isLocked));
       setIsRecording(Boolean(data.isRecording));
 
@@ -2021,6 +1994,7 @@ export default function VideoMeetComponent() {
             setInCall(true);
             socket.emit("join-call", cleanRoomCode, {
               username: username.trim(),
+              identity: userIdentity,
               userId: userData?.id || null,
               isGuest: !userData?.id,
             });
@@ -2035,6 +2009,7 @@ export default function VideoMeetComponent() {
 
       socket.emit("join-call", cleanRoomCode, {
         username: username.trim(),
+        identity: userIdentity,
         userId: userData?.id || null,
         isGuest: !userData?.id,
       });
@@ -2144,7 +2119,7 @@ export default function VideoMeetComponent() {
               />
               <div className={styles.brandTextGroup}>
                 <span className={styles.brandTitle}>Sangam Connect</span>
-                <span className={styles.brandTagline}>ROOM LOCKED</span>
+                <span className={styles.brandTagline}>{roomFull ? "MEETING FULL" : "ROOM LOCKED"}</span>
               </div>
             </div>
           </header>
@@ -2173,7 +2148,7 @@ export default function VideoMeetComponent() {
                 className={styles.cardHeading}
                 style={{ color: "var(--danger, #FF5C5C)" }}
               >
-                Room Locked
+                {roomFull ? "Meeting Full" : "Room Locked"}
               </h1>
               <p className={styles.cardSubtext} style={{ marginBottom: 24 }}>
                 {roomLockedMessage || "This meeting room is locked by the host."}
@@ -2443,8 +2418,8 @@ export default function VideoMeetComponent() {
           token={livekitToken}
           serverUrl={livekitWsUrl}
           connect={true}
-          video={cameraEnabled}
-          audio={micEnabled}
+          video={role !== "attendee" && cameraEnabled}
+          audio={role !== "attendee" && micEnabled}
           onDisconnected={handleLeaveCall}
           data-lk-theme="default"
           style={{ width: "100%", height: "100%" }}
@@ -2457,7 +2432,8 @@ export default function VideoMeetComponent() {
             socketRef={socketRef}
             onLeave={handleLeaveCall}
             userData={userData}
-            isHost={isHost}
+            livekitToken={livekitToken}
+            role={role}
             isLocked={isLocked}
             isRecording={isRecording}
           />

@@ -191,4 +191,45 @@ describe("Phase 6 — Frontend Features Test Suite", () => {
       expect(screen.getByText(/Virtual Office/i)).toBeInTheDocument();
     });
   });
+
+  describe("ParticipantsPanel role controls", () => {
+    const people = [
+      { socketId: "u-a-1", identity: "u-a-1", username: "Asha", role: "attendee" },
+      { socketId: "u-b-1", identity: "u-b-1", username: "Bilal", role: "speaker" },
+      { socketId: "u-c-1", identity: "u-c-1", username: "Chen", role: "cohost" },
+    ];
+    const renderPanel = (props) =>
+      render(
+        <ParticipantsPanel
+          isOpen={true}
+          onClose={() => {}}
+          participants={people}
+          localParticipant={{ username: "Host", isGuest: false }}
+          raisedHands={new Set(["u-a-1"])}
+          {...props}
+        />
+      );
+
+    it("lets a host approve an attendee and demote a speaker", () => {
+      const onSetRole = vi.fn();
+      renderPanel({ isHost: true, onSetRole });
+      fireEvent.click(screen.getByText("Allow to speak"));
+      expect(onSetRole).toHaveBeenCalledWith("u-a-1", "speaker");
+      fireEvent.click(screen.getByText("Audience"));
+      expect(onSetRole).toHaveBeenCalledWith("u-b-1", "attendee");
+      fireEvent.click(screen.getByText("Uncohost"));
+      expect(onSetRole).toHaveBeenCalledWith("u-c-1", "speaker");
+      expect(screen.getByText(/Co-host ·/)).toBeInTheDocument();
+    });
+
+    it("hides cohost and transfer controls from cohosts, and all controls from others", () => {
+      const { unmount } = renderPanel({ isHost: true, canManageCohosts: false });
+      expect(screen.getByText("Allow to speak")).toBeInTheDocument();
+      expect(screen.queryByText("Co-host")).not.toBeInTheDocument();
+      expect(screen.queryByTitle("Transfer host role")).not.toBeInTheDocument();
+      unmount();
+      renderPanel({ isHost: false });
+      expect(screen.queryByText("Allow to speak")).not.toBeInTheDocument();
+    });
+  });
 });

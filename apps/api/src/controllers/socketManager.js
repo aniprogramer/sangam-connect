@@ -161,6 +161,7 @@ export const connectToSocket = (server) => {
         socketId: socket.id,
         room: path,
         username: userMeta?.username || "Participant",
+        identity: userMeta?.identity || null,
         userId: userMeta?.userId || null,
         isGuest: userMeta?.isGuest ?? !userMeta?.userId,
         mediaState: {
@@ -306,7 +307,7 @@ export const connectToSocket = (server) => {
       for (const recipientId of connections[room]) {
         io.to(recipientId).emit("hand-raise", {
           socketId: socket.id,
-          identity: meta?.username || socket.id,
+          identity: meta?.identity || meta?.username || socket.id,
           raised: Boolean(raised),
         });
       }
@@ -328,20 +329,8 @@ export const connectToSocket = (server) => {
       }
     });
 
-    // ── room-moderation signaling ─────────────────────────────────────────────
-    socket.on("room-moderation", ({ action, targetIdentity, roomId }) => {
-      const meta = participantMeta[socket.id];
-      const room = roomId || meta?.room;
-      if (!room || !connections[room]) return;
-      for (const recipientId of connections[room]) {
-        io.to(recipientId).emit("room-moderation", {
-          action,
-          targetIdentity,
-          callerIdentity: meta?.username || socket.id,
-        });
-      }
-    });
-
+    // room-moderation is emitted only by the REST routes after a host/cohost check;
+    // clients can no longer broadcast it directly.
 
     // ── chat-message ──────────────────────────────────────────────────────────
     socket.on("chat-message", async (data, sender, messageId) => {

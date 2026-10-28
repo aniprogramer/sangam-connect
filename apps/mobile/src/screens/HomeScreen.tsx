@@ -42,9 +42,7 @@ export default function HomeScreen({ navigation }: any) {
         },
         body: JSON.stringify({
           roomName: cleanCode,
-          identity: `mob-${Date.now().toString(36)}`,
           name: cleanUsername,
-          isGuest: !accessToken,
         }),
       });
 
@@ -57,6 +55,7 @@ export default function HomeScreen({ navigation }: any) {
         roomName: cleanCode,
         token: data.token,
         serverUrl: data.url || "ws://localhost:7880",
+        role: data.role,
         username: cleanUsername,
       });
     } catch (err: any) {

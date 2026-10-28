@@ -4,6 +4,21 @@ import express from "express";
 import roomRoutes from "../routes/room.routes.js";
 import userRoutes from "../routes/users.routes.js";
 import livekitRoutes from "../routes/livekit.routes.js";
+import { setRoomService } from "../services/livekit.service.js";
+
+// No SFU in tests: participant counts fall back to 0.
+setRoomService({ listParticipants: async () => { throw new Error("offline"); } });
+
+// First token caller for a room becomes host; returns headers carrying that host's token.
+const hostHeaders = async (base, roomName) => {
+  const res = await fetch(`${base}/api/v1/livekit/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roomName, name: "Host" }),
+  });
+  const { token } = await res.json();
+  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+};
 
 const withServer = async (fn) => {
   const app = express();
@@ -36,9 +51,10 @@ test("Phase 6 Room Routes - GET /:roomId/state returns default state", async () 
 
 test("Phase 6 Room Routes - POST /:roomId/moderation applies lock and mute-all", async () => {
   await withServer(async (base) => {
+    const headers = await hostHeaders(base, "test-mod-room");
     const lockRes = await fetch(`${base}/api/v1/rooms/test-mod-room/moderation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ action: "lock-room" }),
     });
     assert.strictEqual(lockRes.status, 200);
@@ -47,7 +63,7 @@ test("Phase 6 Room Routes - POST /:roomId/moderation applies lock and mute-all",
 
     const muteRes = await fetch(`${base}/api/v1/rooms/test-mod-room/moderation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ action: "mute-all" }),
     });
     assert.strictEqual(muteRes.status, 200);
@@ -56,7 +72,7 @@ test("Phase 6 Room Routes - POST /:roomId/moderation applies lock and mute-all",
 
     const missingTargetRes = await fetch(`${base}/api/v1/rooms/test-mod-room/moderation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ action: "mute-individual" }),
     });
     assert.strictEqual(missingTargetRes.status, 400);
@@ -65,10 +81,11 @@ test("Phase 6 Room Routes - POST /:roomId/moderation applies lock and mute-all",
 
 test("Phase 6 Room Routes - Recording Start & Stop lifecycle", async () => {
   await withServer(async (base) => {
+    const headers = await hostHeaders(base, "test-rec-room");
     const startRes = await fetch(`${base}/api/v1/rooms/test-rec-room/recording/start`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callerIdentity: "host-1" }),
+      headers,
+      body: JSON.stringify({}),
     });
     assert.strictEqual(startRes.status, 200);
     const startBody = await startRes.json();
@@ -77,8 +94,8 @@ test("Phase 6 Room Routes - Recording Start & Stop lifecycle", async () => {
 
     const stopRes = await fetch(`${base}/api/v1/rooms/test-rec-room/recording/stop`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callerIdentity: "host-1" }),
+      headers,
+      body: JSON.stringify({}),
     });
     assert.strictEqual(stopRes.status, 200);
     const stopBody = await stopRes.json();
@@ -88,9 +105,10 @@ test("Phase 6 Room Routes - Recording Start & Stop lifecycle", async () => {
 
 test("Phase 6 Room Routes - Breakout Rooms Create and Close", async () => {
   await withServer(async (base) => {
+    const headers = await hostHeaders(base, "test-breakout-room");
     const createRes = await fetch(`${base}/api/v1/rooms/test-breakout-room/breakout/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         rooms: [
           { name: "Breakout 1", participants: ["user-1", "user-2"] },
@@ -104,7 +122,7 @@ test("Phase 6 Room Routes - Breakout Rooms Create and Close", async () => {
 
     const closeRes = await fetch(`${base}/api/v1/rooms/test-breakout-room/breakout/close`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({}),
     });
     assert.strictEqual(closeRes.status, 200);
@@ -155,10 +173,10 @@ test("Phase 6 LiveKit Route - @username token minting and room lock checks", asy
     const tokenBody = await tokenRes.json();
     assert.ok(tokenBody.token);
 
-    // Lock room via moderation
+    // Host (first caller) locks the room via moderation
     await fetch(`${base}/api/v1/rooms/locked-test-room/moderation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await hostHeaders(base, "locked-test-room"),
       body: JSON.stringify({ action: "lock-room" }),
     });
 

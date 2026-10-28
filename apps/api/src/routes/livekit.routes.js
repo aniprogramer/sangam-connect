@@ -1,24 +1,61 @@
-import { Router } from "express";
+import crypto from "node:crypto";
+import express, { Router } from "express";
 import httpStatus from "http-status";
+import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
-import { createLiveKitToken, verifyLiveKitWebhook } from "../services/livekit.service.js";
+import {
+  createLiveKitToken,
+  verifyLiveKitWebhook,
+  resolveRole,
+  roomService,
+} from "../services/livekit.service.js";
 import { Room } from "../models/room.model.js";
-import { getMemoryRoom } from "../services/roomState.service.js";
+import { getMemoryRoom, setMemoryRoom } from "../services/roomState.service.js";
 import { validate, livekitTokenSchema } from "../validators/index.js";
 
 const router = Router();
 const ROOM_GRACE_PERIOD_MS =
   parseInt(process.env.ROOM_GRACE_PERIOD_MS, 10) || 15 * 60 * 1000;
 
+const randomSuffix = (length) =>
+  crypto.randomBytes(8).toString("hex").slice(0, length);
+
+/** userId from a valid Bearer access token, or null for guests. */
+const userIdFromRequest = (req) => {
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Bearer ") || !process.env.JWT_SECRET) return null;
+  try {
+    return jwt.verify(header.substring(7), process.env.JWT_SECRET).sub || null;
+  } catch (_) {
+    return null;
+  }
+};
+
+/** Live participant count from LiveKit, falling back to the webhook-stored count. */
+const countParticipants = async (roomName, room) => {
+  try {
+    const list = await roomService().listParticipants(roomName);
+    return list.length;
+  } catch (_) {
+    return room?.participantCount || 0;
+  }
+};
+
 router.post("/token", validate(livekitTokenSchema), async (req, res) => {
   try {
-    const { roomName, identity, name, isGuest, avatar, roomAdmin } = req.body;
+    // Client-sent identity and roomAdmin are ignored: identity and role are server-side only.
+    const { roomName, name, avatar } = req.body;
 
-    if (!roomName || !identity) {
+    if (!roomName) {
       return res.status(httpStatus.BAD_REQUEST).json({
-        message: "roomName and identity are required.",
+        message: "roomName is required.",
       });
     }
+
+    const userId = userIdFromRequest(req);
+    // Random suffix per join so a second tab does not replace the first session.
+    const identity = userId ? `u-${userId}-${randomSuffix(6)}` : `g-${randomSuffix(8)}`;
+    const roleKey = userId || identity;
 
     const rawRoomName = roomName;
     const effectiveRoomName = rawRoomName.startsWith("@")
@@ -67,20 +104,47 @@ router.post("/token", validate(livekitTokenSchema), async (req, res) => {
         room.lastParticipantLeftAt = null;
         if (room.save) await room.save();
       }
-    } else if (mongoose.connection?.readyState === 1) {
-      // First participant creates the room
-      try {
-        room = await Room.create({
+    } else {
+      // First participant creates the room and becomes host.
+      if (mongoose.connection?.readyState === 1) {
+        try {
+          room = await Room.create({
+            roomId: effectiveRoomName,
+            creatorId: roleKey,
+            status: "active",
+          });
+        } catch (err) {
+          room = await Room.findOne({ roomId: effectiveRoomName }).catch(() => null);
+        }
+      }
+      if (!room) {
+        room = setMemoryRoom(effectiveRoomName, {
           roomId: effectiveRoomName,
-          creatorId: identity,
+          creatorId: roleKey,
           status: "active",
+          roles: {},
+          participantCount: 0,
         });
-      } catch (err) {
-        // ignore duplicate or creation error
       }
     }
 
-    const isHost = Boolean(roomAdmin || (room && room.creatorId === identity));
+    // Rooms first created by another endpoint have no creator yet: first token caller claims host.
+    if (!room.creatorId) {
+      room.creatorId = roleKey;
+      if (room.save) await room.save();
+    }
+
+    const participantCount = await countParticipants(effectiveRoomName, room);
+    const role = resolveRole(room, roleKey, participantCount);
+    const isHost = role === "host" || role === "cohost";
+
+    const maxParticipants = parseInt(process.env.MAX_PARTICIPANTS, 10) || 500;
+    if (participantCount >= maxParticipants && role !== "host") {
+      return res.status(httpStatus.FORBIDDEN).json({
+        code: "ROOM_FULL",
+        message: `This meeting is full (${maxParticipants} participants).`,
+      });
+    }
 
     if (room && room.isLocked && !isHost) {
       return res.status(httpStatus.FORBIDDEN).json({
@@ -96,10 +160,12 @@ router.post("/token", validate(livekitTokenSchema), async (req, res) => {
       name,
       roomName: effectiveRoomName,
       roomAdmin: isHost,
+      role,
       metadata: {
         username: name || identity,
         avatar: avatar || null,
-        isGuest: Boolean(isGuest),
+        isGuest: !userId,
+        userId,
       },
     });
 
@@ -112,6 +178,8 @@ router.post("/token", validate(livekitTokenSchema), async (req, res) => {
     return res.status(httpStatus.OK).json({
       token,
       url: livekitUrl,
+      identity,
+      role,
       isHost,
       isWaiting,
       waitingRoomEnabled: Boolean(room?.waitingRoomEnabled),
@@ -126,16 +194,20 @@ router.post("/token", validate(livekitTokenSchema), async (req, res) => {
   }
 });
 
-router.post("/webhook", async (req, res) => {
+// LiveKit posts Content-Type application/webhook+json, which express.json() skips.
+// Keep the raw body so the sha256 claim is checked against the exact bytes sent.
+router.post("/webhook", express.raw({ type: "application/webhook+json" }), async (req, res) => {
   const authHeader = req.headers.authorization;
-  const isVerified = verifyLiveKitWebhook(req.body, authHeader);
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : JSON.stringify(req.body);
+  const isVerified = verifyLiveKitWebhook(rawBody, authHeader);
 
   if (!isVerified && process.env.NODE_ENV === "production") {
     return res.status(httpStatus.UNAUTHORIZED).json({ message: "Invalid webhook signature" });
   }
 
   try {
-    const event = req.body;
+    const event = Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString("utf8")) : req.body;
+    const numParticipants = event?.room?.numParticipants || 0;
     const roomName = event?.room?.name;
 
     if (roomName) {
@@ -145,19 +217,19 @@ router.post("/webhook", async (req, res) => {
           { status: "expired", lastParticipantLeftAt: new Date() }
         );
       } else if (event.event === "participant_left") {
-        if (event.room?.numParticipants === 0) {
-          await Room.findOneAndUpdate(
-            { roomId: roomName },
-            { status: "empty", lastParticipantLeftAt: new Date() }
-          );
-        }
+        await Room.findOneAndUpdate(
+          { roomId: roomName },
+          numParticipants === 0
+            ? { status: "empty", lastParticipantLeftAt: new Date(), participantCount: 0 }
+            : { participantCount: numParticipants }
+        );
       } else if (
         event.event === "participant_joined" ||
         event.event === "room_started"
       ) {
         await Room.findOneAndUpdate(
           { roomId: roomName },
-          { status: "active", lastParticipantLeftAt: null }
+          { status: "active", lastParticipantLeftAt: null, participantCount: numParticipants }
         );
       }
     }

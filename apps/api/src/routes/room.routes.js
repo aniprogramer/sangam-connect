@@ -6,23 +6,31 @@ import { Message } from "../models/message.model.js";
 import { Room } from "../models/room.model.js";
 import { getMemoryRoom, setMemoryRoom } from "../services/roomState.service.js";
 import {
+  grantsForRole,
+  resolveRole,
+  roleKeyOf,
+  roomService,
+  verifyLiveKitToken,
+} from "../services/livekit.service.js";
+import {
   validate,
   moderationSchema,
   recordingSchema,
   breakoutSchema,
   chatUploadSchema,
+  roleChangeSchema,
 } from "../validators/index.js";
 
 const router = Router();
 
-const getOrCreateRoom = async (roomId, callerIdentity = null) => {
+const getOrCreateRoom = async (roomId) => {
   if (mongoose.connection?.readyState === 1) {
     try {
       let room = await Room.findOne({ roomId });
       if (!room) {
         room = await Room.create({
           roomId,
-          creatorId: callerIdentity || null,
+          creatorId: null,
           status: "active",
           waitingRoomEnabled: false,
           isLocked: false,
@@ -40,8 +48,10 @@ const getOrCreateRoom = async (roomId, callerIdentity = null) => {
   if (!mem) {
     mem = setMemoryRoom(roomId, {
       roomId,
-      creatorId: callerIdentity || null,
+      creatorId: null,
       status: "active",
+      roles: {},
+      participantCount: 0,
       waitingRoomEnabled: false,
       isLocked: false,
       isRecording: false,
@@ -56,6 +66,53 @@ const getOrCreateRoom = async (roomId, callerIdentity = null) => {
   return mem;
 };
 
+/**
+ * Authorizes the caller with their own LiveKit token (Authorization: Bearer <token>).
+ * The token proves identity for both users and guests; the role is re-read from the room,
+ * so a demoted participant's older token grants nothing.
+ */
+const requireRoomRole = (...allowedRoles) => async (req, res, next) => {
+  const header = req.headers.authorization || "";
+  const payload = header.startsWith("Bearer ")
+    ? verifyLiveKitToken(header.substring(7))
+    : null;
+
+  if (!payload?.sub) {
+    return res.status(httpStatus.UNAUTHORIZED).json({
+      code: "NOT_AUTHORIZED",
+      message: "A valid meeting token is required.",
+    });
+  }
+
+  const { roomId } = req.params;
+  if (payload.video?.room !== roomId) {
+    return res.status(httpStatus.FORBIDDEN).json({
+      code: "NOT_AUTHORIZED",
+      message: "Meeting token is for a different room.",
+    });
+  }
+
+  try {
+    const room = await getOrCreateRoom(roomId);
+    const role = resolveRole(room, roleKeyOf(payload.sub));
+    if (!allowedRoles.includes(role)) {
+      return res.status(httpStatus.FORBIDDEN).json({
+        code: "NOT_AUTHORIZED",
+        message: "Only the host or a co-host can do this.",
+      });
+    }
+    req.room = room;
+    req.caller = { identity: payload.sub, role };
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const setStoredRole = (room, key, role) => {
+  if (typeof room.roles?.set === "function") room.roles.set(key, role);
+  else room.roles = { ...(room.roles || {}), [key]: role };
+};
 
 // ── GET /:roomId/messages ────────────────────────────────────────────────────
 router.get("/:roomId/messages", async (req, res) => {
@@ -124,11 +181,19 @@ router.get("/:roomId/state", async (req, res) => {
 });
 
 // ── POST /:roomId/moderation ─────────────────────────────────────────────────
-router.post("/:roomId/moderation", validate(moderationSchema), async (req, res) => {
+router.post("/:roomId/moderation", validate(moderationSchema), requireRoomRole("host", "cohost"), async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { action, targetIdentity, callerIdentity } = req.body;
-    const room = await getOrCreateRoom(roomId, callerIdentity);
+    const { action, targetIdentity } = req.body;
+    const { room } = req;
+    const callerIdentity = req.caller.identity;
+
+    if (action === "transfer-host" && req.caller.role !== "host") {
+      return res.status(httpStatus.FORBIDDEN).json({
+        code: "NOT_AUTHORIZED",
+        message: "Only the host can transfer host.",
+      });
+    }
 
     if (["mute-individual", "remove-participant", "transfer-host"].includes(action) && !targetIdentity) {
       return res.status(httpStatus.BAD_REQUEST).json({
@@ -140,7 +205,7 @@ router.post("/:roomId/moderation", validate(moderationSchema), async (req, res) 
       if (action === "lock-room") room.isLocked = true;
       if (action === "unlock-room") room.isLocked = false;
       if (action === "toggle-waiting-room") room.waitingRoomEnabled = !room.waitingRoomEnabled;
-      if (action === "transfer-host") room.creatorId = targetIdentity;
+      if (action === "transfer-host") room.creatorId = roleKeyOf(targetIdentity);
       if (room.save) await room.save();
     }
 
@@ -149,7 +214,7 @@ router.post("/:roomId/moderation", validate(moderationSchema), async (req, res) 
       io.to(roomId).emit("room-moderation", {
         action,
         targetIdentity: targetIdentity || null,
-        callerIdentity: callerIdentity || null,
+        callerIdentity,
         waitingRoomEnabled: room?.waitingRoomEnabled,
         isLocked: room?.isLocked,
       });
@@ -173,12 +238,83 @@ router.post("/:roomId/moderation", validate(moderationSchema), async (req, res) 
   }
 });
 
+// ── POST /:roomId/participants/:identity/role ───────────────────────────────
+// Promote/demote a participant. Persists the role by role key (userId or guest identity)
+// and updates the live LiveKit permissions so the change applies without rejoining.
+router.post(
+  "/:roomId/participants/:identity/role",
+  validate(roleChangeSchema),
+  requireRoomRole("host", "cohost"),
+  async (req, res) => {
+    try {
+      const { roomId, identity } = req.params;
+      const { role } = req.body;
+      const { room } = req;
+      const targetKey = roleKeyOf(identity);
+      const currentRole = resolveRole(room, targetKey);
+
+      if (currentRole === "host") {
+        return res.status(httpStatus.FORBIDDEN).json({
+          code: "NOT_AUTHORIZED",
+          message: "The host's role cannot be changed. Use transfer-host instead.",
+        });
+      }
+      if ((role === "cohost" || currentRole === "cohost") && req.caller.role !== "host") {
+        return res.status(httpStatus.FORBIDDEN).json({
+          code: "NOT_AUTHORIZED",
+          message: "Only the host can add or remove co-hosts.",
+        });
+      }
+
+      setStoredRole(room, targetKey, role);
+      if (room.save) await room.save();
+
+      let live = true;
+      try {
+        const participant = await roomService().getParticipant(roomId, identity);
+        let metadata = {};
+        try {
+          metadata = JSON.parse(participant.metadata || "{}");
+        } catch (_) {}
+        await roomService().updateParticipant(
+          roomId,
+          identity,
+          JSON.stringify({ ...metadata, role }),
+          grantsForRole(role)
+        );
+      } catch (_) {
+        // Not connected (or SFU unreachable): role still applies on next join.
+        live = false;
+      }
+
+      const io = req.app.get("io");
+      if (io) {
+        io.to(roomId).emit("room-moderation", {
+          action: "role-changed",
+          targetIdentity: identity,
+          role,
+          callerIdentity: req.caller.identity,
+        });
+        if (role !== "attendee") {
+          io.to(roomId).emit("hand-raise", { identity, raised: false });
+        }
+      }
+
+      return res.status(httpStatus.OK).json({ success: true, identity, role, live });
+    } catch (error) {
+      console.error("Role change error:", error);
+      return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+        message: "Failed to change participant role.",
+      });
+    }
+  }
+);
+
 // ── POST /:roomId/recording/start ───────────────────────────────────────────
-router.post("/:roomId/recording/start", validate(recordingSchema), async (req, res) => {
+router.post("/:roomId/recording/start", validate(recordingSchema), requireRoomRole("host", "cohost"), async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { callerIdentity } = req.body;
-    const room = await getOrCreateRoom(roomId, callerIdentity);
+    const { room } = req;
 
     const recordingId = `egress-${crypto.randomUUID()}`;
     if (room) {
@@ -209,10 +345,10 @@ router.post("/:roomId/recording/start", validate(recordingSchema), async (req, r
 });
 
 // ── POST /:roomId/recording/stop ────────────────────────────────────────────
-router.post("/:roomId/recording/stop", validate(recordingSchema), async (req, res) => {
+router.post("/:roomId/recording/stop", validate(recordingSchema), requireRoomRole("host", "cohost"), async (req, res) => {
   try {
     const { roomId } = req.params;
-    const room = await getOrCreateRoom(roomId);
+    const { room } = req;
     const recordingId = room?.recordingId || "unknown";
 
     if (room) {
@@ -242,11 +378,11 @@ router.post("/:roomId/recording/stop", validate(recordingSchema), async (req, re
 });
 
 // ── POST /:roomId/breakout/create ───────────────────────────────────────────
-router.post("/:roomId/breakout/create", validate(breakoutSchema), async (req, res) => {
+router.post("/:roomId/breakout/create", validate(breakoutSchema), requireRoomRole("host", "cohost"), async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { rooms, callerIdentity } = req.body;
-    const room = await getOrCreateRoom(roomId, callerIdentity);
+    const { rooms } = req.body;
+    const { room } = req;
 
     const formattedRooms = rooms.map((r, idx) => ({
       id: r.id || `${roomId}-breakout-${idx + 1}`,
@@ -280,10 +416,10 @@ router.post("/:roomId/breakout/create", validate(breakoutSchema), async (req, re
 });
 
 // ── POST /:roomId/breakout/close ────────────────────────────────────────────
-router.post("/:roomId/breakout/close", async (req, res) => {
+router.post("/:roomId/breakout/close", requireRoomRole("host", "cohost"), async (req, res) => {
   try {
     const { roomId } = req.params;
-    const room = await getOrCreateRoom(roomId);
+    const { room } = req;
 
     if (room) {
       room.breakoutRooms = [];
