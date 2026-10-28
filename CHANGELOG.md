@@ -4,6 +4,25 @@ All notable changes to the Sangam Connect platform are documented in this file.
 
 ## [2.5.0] - Unreleased
 
+### Documentation
+
+- **README rewritten from a code audit:**
+  - Documents the LiveKit SFU architecture (the old README described a P2P mesh), the `apps/*` + `packages/*` monorepo, Vite (not CRA) and API port 8002.
+  - Adds exact dependency versions, full REST and Socket.IO references, and Mermaid architecture, sequence and ER diagrams.
+  - Adds env tables, troubleshooting and a roadmap.
+- **Added an ISC `LICENSE`**. The old README linked to a file that did not exist.
+- **`apps/api/.env.example`** now documents `REDIS_URL`, `LOG_LEVEL` and the `EMAIL_*` aliases.
+
+### Large Rooms — Phase 2: Adaptive Media
+
+- **Shared `ROOM_OPTIONS`** (`packages/shared/src/roomOptions.js`): one LiveKit options object for both web (`VideoMeet.jsx`) and mobile (`RoomScreen.tsx`).
+  - `adaptiveStream` and `dynacast` are now on. Both were off by default in the SDK.
+  - Capture is 720p30, with simulcast layers at 180p and 360p. 360p is the fallback for constrained viewers.
+  - Codec is VP8, with Opus DTX + RED, plus echo cancellation, noise suppression and auto gain control.
+- **Reconnect status**: `NetworkStatusBadge` now shows "Reconnecting" while LiveKit is reconnecting (`useConnectionState`, driven by `RoomEvent.Reconnecting`/`SignalReconnecting`), and returns to measured quality after `Reconnected`.
+- **`VITE_ADAPTIVE_MEDIA`** (web, default `true`): set it to `false` to pass no options and use the plain SDK defaults. Documented in the new `apps/web/.env.example`.
+- Mobile change is untested: the mobile workspace cannot install (`@livekit/react-native-webrtc@^124` does not exist).
+
 ### Large Rooms — Phase 1: Role-Based Publishing
 
 - **Room roles** (`host`, `cohost`, `speaker`, `attendee`) are resolved server-side only. The room creator is host. Roles are stored on the room by user id (or by LiveKit identity for guests), so they survive a rejoin.
