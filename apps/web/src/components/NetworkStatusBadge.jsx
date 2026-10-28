@@ -7,11 +7,15 @@ import useNetworkDiagnostics from "../hooks/useNetworkDiagnostics";
  * Visual network quality badge with expandable diagnostics telemetry popover.
  *
  * @param {React.MutableRefObject<Object>} connectionsRef - Optional active peer connections ref
+ * @param {string} [connectionState] - LiveKit ConnectionState; reconnect states override measured quality
  */
-export function NetworkStatusBadge({ connectionsRef = null }) {
+export function NetworkStatusBadge({ connectionsRef = null, connectionState }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
-  const metrics = useNetworkDiagnostics(connectionsRef);
+  const diagnostics = useNetworkDiagnostics(connectionsRef);
+  const isReconnecting =
+    connectionState === "reconnecting" || connectionState === "signalReconnecting";
+  const metrics = isReconnecting ? { ...diagnostics, quality: "Reconnecting" } : diagnostics;
 
   useEffect(() => {
     const handleClickOutside = (e) => {

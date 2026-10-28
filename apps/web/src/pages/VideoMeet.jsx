@@ -27,6 +27,7 @@ import {
   useParticipants,
   useLocalParticipant,
   useRoomContext,
+  useConnectionState,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import "@livekit/components-styles";
@@ -67,6 +68,7 @@ import {
   safeCloseAudioContext,
   parseEmojiShortcodes,
   resolvePersonalRoomCode,
+  ROOM_OPTIONS,
 } from "@sangam/shared";
 import NetworkStatusBadge from "../components/NetworkStatusBadge";
 
@@ -147,6 +149,7 @@ function LiveKitMeetingStage({
   });
   const participants = useParticipants();
   const { localParticipant } = useLocalParticipant();
+  const connectionState = useConnectionState();
 
   const [role, setRole] = useState(initialRole);
   const isHost = role === "host" || role === "cohost";
@@ -848,7 +851,7 @@ function LiveKitMeetingStage({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto" }}>
-          <NetworkStatusBadge />
+          <NetworkStatusBadge connectionState={connectionState} />
           <div className={styles.callTimerBadge}>
             <span>Elapsed:</span>
             <strong className="tabular-nums">{formatDuration(elapsedSeconds)}</strong>
@@ -2418,6 +2421,8 @@ export default function VideoMeetComponent() {
           token={livekitToken}
           serverUrl={livekitWsUrl}
           connect={true}
+          // VITE_ADAPTIVE_MEDIA=false restores the SDK defaults (no adaptiveStream/dynacast).
+          options={import.meta.env.VITE_ADAPTIVE_MEDIA === "false" ? undefined : ROOM_OPTIONS}
           video={role !== "attendee" && cameraEnabled}
           audio={role !== "attendee" && micEnabled}
           onDisconnected={handleLeaveCall}
