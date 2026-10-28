@@ -15,6 +15,7 @@ import {
 } from "@livekit/react-native";
 import { Track } from "livekit-client";
 import { colors } from "@sangam/tokens";
+import { ROOM_OPTIONS } from "@sangam/shared";
 
 const palette = colors.dark;
 
@@ -116,6 +117,7 @@ export default function RoomScreen({ route, navigation }: any) {
       token={token}
       serverUrl={serverUrl}
       connect
+      options={ROOM_OPTIONS}
       audio={canPublish}
       video={canPublish}
       onDisconnected={handleDisconnected}
