@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.7
+    container_name: sangam-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    network_mode: host
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: sangam-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: sangam-coturn
+    restart: unless-stopped
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --realm=sangam.connect
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=sangamuser:sangampass
+      - --min-port=50000
+      - --max-port=50100
+
+  livekit-egress:
+    image: livekit/egress:v1.8
+    container_name: sangam-livekit-egress
+    restart: unless-stopped
+    environment:
+      - EGRESS_CONFIG_FILE=/etc/egress.yaml
+    volumes:
+      - ./egress.yaml:/etc/egress.yaml:ro
+    depends_on:
+      - livekit
+      - redis
+
+volumes:
+  redis-data:
+

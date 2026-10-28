@@ -1,0 +1,14 @@
+{
+  "name": "sangam",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/api & npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "test": "npm test -w apps/api && npm test -w apps/web",
+    "start": "npm start -w apps/api"
+  }
+}
