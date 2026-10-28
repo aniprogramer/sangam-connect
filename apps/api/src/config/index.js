@@ -28,6 +28,10 @@ export const validateConfig = (env = process.env) => {
     JWT_REFRESH_SECRET: env.JWT_REFRESH_SECRET,
     CLIENT_ORIGINS: env.CLIENT_ORIGINS || "http://localhost:5173,http://localhost:3000",
     ROOM_GRACE_PERIOD_MS: parseInt(env.ROOM_GRACE_PERIOD_MS, 10) || 15 * 60 * 1000,
+    LIVEKIT_API_KEY: env.LIVEKIT_API_KEY || "devkey",
+    LIVEKIT_API_SECRET: env.LIVEKIT_API_SECRET || "devsecret",
+    LIVEKIT_URL: env.LIVEKIT_URL || (env.NODE_ENV === "production" ? "wss://sangam.livekit.cloud" : "ws://localhost:7880"),
+    REDIS_URL: env.REDIS_URL || "",
     NODE_ENV: env.NODE_ENV || "development",
   });
 };

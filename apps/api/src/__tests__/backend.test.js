@@ -33,17 +33,20 @@ test("LiveKit Service - creates valid HS256 JWT with correct claims", () => {
   assert.ok(payload.exp > payload.nbf, "exp must be after nbf");
 });
 
-test("SocketManager - verifies signal relay uses socket.id instead of socket.io", () => {
+test("SocketManager - verifies reaction relay to room participants", () => {
   const httpServer = createServer();
   const io = connectToSocket(httpServer);
 
-  let signalHandler = null;
+  let joinHandler = null;
+  let reactionHandler = null;
   let emitted = [];
 
   const mockSocket = {
     id: "socket-sender-123",
+    emit() {},
     on(event, handler) {
-      if (event === "signal") signalHandler = handler;
+      if (event === "join-call") joinHandler = handler;
+      if (event === "reaction") reactionHandler = handler;
     },
   };
 
@@ -52,22 +55,25 @@ test("SocketManager - verifies signal relay uses socket.id instead of socket.io"
 
   const originalTo = io.to.bind(io);
   io.to = (recipientId) => ({
-    emit: (eventName, fromId, payload) => {
-      emitted.push({ recipientId, eventName, fromId, payload });
+    emit: (eventName, payload) => {
+      emitted.push({ recipientId, eventName, payload });
     },
   });
 
   try {
-    signalHandler("socket-receiver-456", JSON.stringify({ sdp: { type: "offer" } }));
-    assert.equal(emitted.length, 1);
-    assert.equal(emitted[0].eventName, "signal");
-    assert.equal(emitted[0].recipientId, "socket-receiver-456");
-    assert.equal(emitted[0].fromId, "socket-sender-123");
-    assert.equal(typeof emitted[0].fromId, "string");
+    joinHandler("test-room-reaction", { username: "Alice" });
+    reactionHandler("🎉");
+    const reactionEvents = emitted.filter((e) => e.eventName === "reaction");
+    assert.equal(reactionEvents.length, 1);
+    assert.equal(reactionEvents[0].recipientId, "socket-sender-123");
+    assert.equal(reactionEvents[0].payload.emoji, "🎉");
+    assert.equal(reactionEvents[0].payload.senderId, "socket-sender-123");
+    assert.equal(reactionEvents[0].payload.senderName, "Alice");
   } finally {
     io.to = originalTo;
   }
 });
+
 
 test("SocketManager - handles join-call deduplication and media-state relay", () => {
   const httpServer = createServer();

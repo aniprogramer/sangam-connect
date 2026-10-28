@@ -1,5 +1,9 @@
 import { Server } from "socket.io";
+import mongoose from "mongoose";
+import Redis from "ioredis";
+import { createAdapter } from "@socket.io/redis-adapter";
 import { allowedOrigins } from "../config/cors.js";
+import { Message } from "../models/message.model.js";
 
 /** @type {Record<string, string[]>} room path → [socketId, ...] */
 let connections = {};
@@ -35,6 +39,19 @@ export const connectToSocket = (server) => {
       credentials: true,
     },
   });
+
+  if (process.env.REDIS_URL) {
+    try {
+      const pubClient = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
+      const subClient = pubClient.duplicate();
+      pubClient.on("error", (err) => log.warn("redis_pub_error", { error: err.message }));
+      subClient.on("error", (err) => log.warn("redis_sub_error", { error: err.message }));
+      io.adapter(createAdapter(pubClient, subClient));
+      log.info("redis_adapter_connected");
+    } catch (err) {
+      log.warn("redis_adapter_failed_fallback_memory", { error: err.message });
+    }
+  }
 
   const removeSocketFromRoom = (socketId) => {
     let foundRoom = null;
@@ -96,7 +113,7 @@ export const connectToSocket = (server) => {
     log.info("socket_connected", { socketId: socket.id });
 
     // ── join-call ─────────────────────────────────────────────────────────────
-    socket.on("join-call", (path, userMeta = {}) => {
+    socket.on("join-call", async (path, userMeta = {}) => {
       // Check if room has expired
       const currentRoom = roomState[path];
       if (currentRoom && currentRoom.status === "expired") {
@@ -134,6 +151,10 @@ export const connectToSocket = (server) => {
       if (!connections[path].includes(socket.id)) {
         connections[path].push(socket.id);
       }
+      if (typeof socket.join === "function") {
+        socket.join(path);
+      }
+
 
       timeOnline[socket.id] = new Date();
       participantMeta[socket.id] = {
@@ -168,8 +189,9 @@ export const connectToSocket = (server) => {
       // Send the current participants directory directly to the new joiner
       socket.emit("room-participants", roomParticipants);
 
-      // Notify all participants (including joiner) of user join with meta
+      // Notify all participants of user join with meta
       for (let i = 0; i < connections[path].length; i++) {
+        io.to(connections[path][i]).emit("participant-joined", participantMeta[socket.id]);
         io.to(connections[path][i]).emit(
           "user-joined",
           socket.id,
@@ -178,8 +200,24 @@ export const connectToSocket = (server) => {
         );
       }
 
-      // Replay chat history to the new joiner.
-      if (messages[path]) {
+      // Replay chat history to the new joiner
+      let replayed = false;
+      if (mongoose.connection?.readyState === 1) {
+        try {
+          const dbMsgs = await Message.find({ roomId: path }).sort({ createdAt: -1 }).limit(100);
+          if (dbMsgs && dbMsgs.length > 0) {
+            const chronological = dbMsgs.reverse();
+            for (const msg of chronological) {
+              io.to(socket.id).emit("chat-message", msg.text, msg.senderName, msg.senderId, msg._id.toString());
+            }
+            replayed = true;
+          }
+        } catch (err) {
+          log.warn("chat_history_db_error", { error: err.message, room: path });
+        }
+      }
+
+      if (!replayed && messages[path]) {
         for (const msg of messages[path]) {
           io.to(socket.id).emit(
             "chat-message",
@@ -217,27 +255,96 @@ export const connectToSocket = (server) => {
       }
     });
 
-    // ── signal ────────────────────────────────────────────────────────────────
-    socket.on("signal", (toId, message) => {
-      log.info("signal_relay", {
-        fromId: socket.id,
-        toId,
-        signalType: (() => {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.sdp) return `sdp:${parsed.sdp.type}`;
-            if (parsed.ice) return "ice";
-            return "unknown";
-          } catch {
-            return "parse_error";
-          }
-        })(),
-      });
-      io.to(toId).emit("signal", socket.id, message);
+    // ── reaction ──────────────────────────────────────────────────────────────
+    socket.on("reaction", (emoji) => {
+      const meta = participantMeta[socket.id];
+      const room = meta?.room;
+      if (!room || !connections[room]) return;
+      for (const recipientId of connections[room]) {
+        io.to(recipientId).emit("reaction", {
+          emoji,
+          senderId: socket.id,
+          senderName: meta?.username || "Participant",
+          timestamp: Date.now(),
+        });
+      }
     });
 
+    // ── waiting-room signaling ────────────────────────────────────────────────
+    socket.on("waiting-room-join", ({ roomId, identity, name }) => {
+      if (typeof socket.join === "function") {
+        socket.join(`${roomId}-waiting`);
+      }
+
+      if (connections[roomId]) {
+        for (const recipientId of connections[roomId]) {
+          io.to(recipientId).emit("waiting-room-request", {
+            identity,
+            name: name || identity,
+            socketId: socket.id,
+            roomId,
+          });
+        }
+      }
+    });
+
+    socket.on("waiting-room-decision", ({ roomId, targetSocketId, targetIdentity, approved }) => {
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("waiting-room-response", {
+          approved: Boolean(approved),
+          roomId,
+          targetIdentity,
+        });
+      }
+    });
+
+    // ── hand-raise signaling ──────────────────────────────────────────────────
+    socket.on("hand-raise", ({ raised, roomId }) => {
+      const meta = participantMeta[socket.id];
+      const room = roomId || meta?.room;
+      if (!room || !connections[room]) return;
+      for (const recipientId of connections[room]) {
+        io.to(recipientId).emit("hand-raise", {
+          socketId: socket.id,
+          identity: meta?.username || socket.id,
+          raised: Boolean(raised),
+        });
+      }
+    });
+
+    // ── live captions / transcription-chunk ───────────────────────────────────
+    socket.on("transcription-chunk", ({ text, speaker, isFinal, roomId }) => {
+      const meta = participantMeta[socket.id];
+      const room = roomId || meta?.room;
+      if (!room || !connections[room]) return;
+      for (const recipientId of connections[room]) {
+        io.to(recipientId).emit("transcription-chunk", {
+          text,
+          speaker: speaker || meta?.username || "Speaker",
+          isFinal: Boolean(isFinal),
+          socketId: socket.id,
+          timestamp: Date.now(),
+        });
+      }
+    });
+
+    // ── room-moderation signaling ─────────────────────────────────────────────
+    socket.on("room-moderation", ({ action, targetIdentity, roomId }) => {
+      const meta = participantMeta[socket.id];
+      const room = roomId || meta?.room;
+      if (!room || !connections[room]) return;
+      for (const recipientId of connections[room]) {
+        io.to(recipientId).emit("room-moderation", {
+          action,
+          targetIdentity,
+          callerIdentity: meta?.username || socket.id,
+        });
+      }
+    });
+
+
     // ── chat-message ──────────────────────────────────────────────────────────
-    socket.on("chat-message", (data, sender, messageId) => {
+    socket.on("chat-message", async (data, sender, messageId) => {
       let matchingRoom = null;
       for (const [roomKey, roomValue] of Object.entries(connections)) {
         if (roomValue.includes(socket.id)) {
@@ -257,6 +364,20 @@ export const connectToSocket = (server) => {
         messages[matchingRoom] = [];
       }
       messages[matchingRoom].push({ id: stableId, sender, data, socketId: socket.id });
+
+      if (mongoose.connection?.readyState === 1) {
+        try {
+          await Message.create({
+            roomId: matchingRoom,
+            senderId: socket.id,
+            senderName: sender || "Participant",
+            text: typeof data === "string" ? data : JSON.stringify(data),
+            createdAt: new Date(),
+          });
+        } catch (err) {
+          log.warn("chat_db_save_error", { error: err.message, room: matchingRoom });
+        }
+      }
 
       log.info("chat_message", { room: matchingRoom, sender });
 
