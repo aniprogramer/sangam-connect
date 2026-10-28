@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Sangam Connect",
+    "slug": "sangam-connect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#14120F"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sangam.connect",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio",
+          "voip"
+        ],
+        "NSCameraUsageDescription": "Sangam Connect requires camera access to transmit your video in real-time meetings.",
+        "NSMicrophoneUsageDescription": "Sangam Connect requires microphone access to transmit your audio in real-time meetings."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#14120F"
+      },
+      "package": "com.sangam.connect",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "POST_NOTIFICATIONS",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      "@livekit/react-native",
+      "expo-secure-store"
+    ]
+  }
+}
